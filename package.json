@@ -1,0 +1,36 @@
+{
+  "name": "xynes-accounts-service",
+  "module": "src/index.ts",
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/pg": "^8.16.0",
+    "@typescript-eslint/eslint-plugin": "^8.49.0",
+    "@typescript-eslint/parser": "^8.49.0",
+    "drizzle-kit": "^0.31.8",
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.4",
+    "prettier": "^3.7.4"
+  },
+  "scripts": {
+    "dev": "bun run scripts/run-with-env.ts run --watch src/index.ts",
+    "start": "bun run scripts/run-with-env.ts run src/index.ts",
+    "test": "bun run scripts/run-with-env.ts test",
+    "test:integration": "bun run scripts/run-with-env.ts test --integration",
+    "test:coverage": "bun run scripts/run-with-env.ts run scripts/test-coverage-gate.ts",
+    "lint": "eslint 'src/**/*.{ts,tsx}' 'tests/**/*.{ts,tsx}'",
+    "lint:fix": "eslint 'src/**/*.{ts,tsx}' 'tests/**/*.{ts,tsx}' --fix",
+    "migrate": "drizzle-kit migrate"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.1",
+    "hono": "^4.10.8",
+    "postgres": "^3.4.7",
+    "zod": "^4.2.1"
+  }
+}
