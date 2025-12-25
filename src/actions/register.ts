@@ -6,6 +6,9 @@ import { ensureWorkspaceMemberHandler } from './handlers/ensureWorkspaceMember';
 import { meGetOrCreateHandler } from './handlers/meGetOrCreate';
 import { listWorkspacesForUserHandler } from './handlers/workspaces/listForUser';
 import { createWorkspaceHandler } from './handlers/workspaces/create';
+import { createWorkspaceInviteHandler } from './handlers/invites/create';
+import { resolveWorkspaceInviteHandler } from './handlers/invites/resolve';
+import { acceptWorkspaceInviteHandler } from './handlers/invites/accept';
 
 export function registerAccountsActions() {
   registerAction('accounts.ping', pingHandler);
@@ -15,4 +18,7 @@ export function registerAccountsActions() {
   registerAction('accounts.me.getOrCreate', meGetOrCreateHandler);
   registerAction('accounts.workspaces.listForUser', listWorkspacesForUserHandler);
   registerAction('accounts.workspaces.create', createWorkspaceHandler);
+  registerAction('accounts.invites.create', createWorkspaceInviteHandler);
+  registerAction('accounts.invites.resolve', resolveWorkspaceInviteHandler);
+  registerAction('accounts.invites.accept', acceptWorkspaceInviteHandler);
 }

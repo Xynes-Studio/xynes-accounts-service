@@ -32,3 +32,17 @@ export const workspaceMembers = platformSchema.table(
     pk: primaryKey({ columns: [t.workspaceId, t.userId] }),
   }),
 );
+
+export const workspaceInvites = platformSchema.table('workspace_invites', {
+  id: uuid('id').primaryKey(),
+  workspaceId: uuid('workspace_id').notNull(),
+  email: text('email').notNull(),
+  roleKey: text('role_key').notNull(),
+  invitedBy: uuid('invited_by').notNull(),
+  // SECURITY: Store a one-way hash of the raw invite token.
+  // The raw token should never be stored in the DB.
+  token: text('token').notNull().unique(),
+  status: text('status').notNull().default('pending'),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+});

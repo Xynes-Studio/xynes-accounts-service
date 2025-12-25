@@ -10,11 +10,13 @@ Internal-only Accounts service.
 
 ## Local development
 
-- Docker: uses `.env.dev` via `XYNES_ENV_FILE` default.
-- Local host run: set `XYNES_ENV_FILE=.env.localhost`.
 
 Database connectivity is expected via the shared SSH tunnel:
 
+
+### Workspace Invites (INVITES-CORE-1)
+
+See `DEVELOPER.md` for the action keys and security contract (token hashing, public resolve, authenticated accept).
 `ssh -N -L 5432:127.0.0.1:5432 xynes@84.247.176.134`
 
 ## Scripts

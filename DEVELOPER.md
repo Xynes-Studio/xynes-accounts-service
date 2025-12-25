@@ -82,6 +82,27 @@ All behaviour is exposed via the internal “actions” endpoint.
 	- Assigns `workspace_owner` in authz via internal action `authz.assignRole`
 	- If authz assignment fails and cleanup also fails, the workspace may be orphaned; see logs for `[WorkspacesCreate] Cleanup failed ...`
 
+- `accounts.invites.create` → payload `{ email, roleKey }` → returns `{ id, workspaceId, email, roleKey, status, expiresAt, token }` (DB)
+
+	- Requires `X-XS-User-Id` and `X-Workspace-Id`
+	- Performs RBAC via authz `POST /authz/check` for `accounts.invites.create`
+	- Generates a cryptographically-random invite token and stores only a one-way hash in DB
+	- The raw `token` is returned **once** to the caller (for sharing with the invitee)
+
+- `accounts.invites.resolve` → payload `{ token }` → returns `{ workspaceName, inviterName, roleKey, status, expiresAt }` (DB)
+
+	- **Public** action: does **not** require `X-XS-User-Id` or `X-Workspace-Id`
+	- Looks up invites by hash(token); never stores raw tokens
+	- If an invite is `pending` but already expired, it is marked `expired` best-effort (without leaking DB errors)
+
+- `accounts.invites.accept` → payload `{ token }` → returns `{ accepted, workspaceId, roleKey, workspaceMemberCreated }` (DB)
+
+	- Requires `X-XS-User-Id` (auth required); does **not** require `X-Workspace-Id`
+	- Validates invite is `pending` and not expired/cancelled
+	- Enforces invite email matches the authenticated user email from `identity.users`
+	- Ensures membership exists and assigns the invite's `roleKey` via authz internal action `authz.assignRole`
+	- On authz failure, performs best-effort rollback (revert invite status and remove newly-created membership)
+
 ### Adding a new action (TDD workflow)
 
 Follow ADR-001 order (schema tests → unit logic tests → integration flow test):
@@ -100,6 +121,12 @@ Follow ADR-001 order (schema tests → unit logic tests → integration flow tes
 - Headers `X-XS-User-Id` and `X-Workspace-Id` are validated as UUIDs.
 - JSON request bodies are size-limited via `MAX_JSON_BODY_BYTES` (default 1 MiB).
 - Payload schemas are `z.strict()` to prevent accidental over-posting.
+
+### Workspace invite tokens
+
+- Tokens are **bearer secrets**. Treat them like passwords.
+- The database stores only a **SHA-256 hash** of the token (never the raw token).
+- Public resolve does not echo tokens in error messages.
 
 ## Environment
 

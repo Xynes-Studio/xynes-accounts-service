@@ -5,11 +5,14 @@ export type AccountsActionKey =
   | 'accounts.workspaceMember.ensure'
   | 'accounts.me.getOrCreate'
   | 'accounts.workspaces.listForUser'
-  | 'accounts.workspaces.create';
+  | 'accounts.workspaces.create'
+  | 'accounts.invites.create'
+  | 'accounts.invites.resolve'
+  | 'accounts.invites.accept';
 
 export type ActionContext = {
   workspaceId: string | null;
-  userId: string;
+  userId: string | null;
   requestId: string;
   user?: {
     email?: string;

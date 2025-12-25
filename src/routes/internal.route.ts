@@ -21,6 +21,9 @@ import {
   meGetOrCreatePayloadSchema,
   listWorkspacesForUserPayloadSchema,
   createWorkspacePayloadSchema,
+  createWorkspaceInvitePayloadSchema,
+  resolveWorkspaceInvitePayloadSchema,
+  acceptWorkspaceInvitePayloadSchema,
 } from '../actions/schemas';
 
 const internalRoute = new Hono();
@@ -39,26 +42,15 @@ const NON_WORKSPACE_ACTION_KEYS = new Set<AccountsActionKey>([
   'accounts.me.getOrCreate',
   'accounts.workspaces.listForUser',
   'accounts.workspaces.create',
+  'accounts.invites.resolve',
+  'accounts.invites.accept',
 ]);
+
+const PUBLIC_ACTION_KEYS = new Set<AccountsActionKey>(['accounts.invites.resolve']);
 
 internalRoute.post('/accounts-actions', async (c) => {
   const requestId = c.get('requestId') || generateRequestId();
   c.set('requestId', requestId);
-
-  const rawUserId = c.req.header('X-XS-User-Id');
-  if (!rawUserId) {
-    return c.json(
-      createErrorResponse('UNAUTHORIZED', 'X-XS-User-Id header is required', requestId),
-      401,
-    );
-  }
-  const userIdResult = uuidHeader.safeParse(rawUserId);
-  if (!userIdResult.success) {
-    return c.json(
-      createErrorResponse('INVALID_HEADER', 'X-XS-User-Id must be a UUID', requestId),
-      400,
-    );
-  }
 
   const maxBytes = Number.parseInt(config.server.MAX_JSON_BODY_BYTES, 10) || 1048576;
   const body = await parseJsonBodyWithLimit(c.req.raw, maxBytes);
@@ -74,6 +66,22 @@ internalRoute.post('/accounts-actions', async (c) => {
   const { actionKey, payload: rawPayload } = result.data;
 
   const key = actionKey as AccountsActionKey;
+  const userRequired = !PUBLIC_ACTION_KEYS.has(key);
+  const rawUserId = c.req.header('X-XS-User-Id');
+  if (userRequired && !rawUserId) {
+    return c.json(
+      createErrorResponse('UNAUTHORIZED', 'X-XS-User-Id header is required', requestId),
+      401,
+    );
+  }
+  const userIdResult = rawUserId ? uuidHeader.safeParse(rawUserId) : null;
+  if (userRequired && (!userIdResult || !userIdResult.success)) {
+    return c.json(
+      createErrorResponse('INVALID_HEADER', 'X-XS-User-Id must be a UUID', requestId),
+      400,
+    );
+  }
+
   const workspaceRequired = !NON_WORKSPACE_ACTION_KEYS.has(key);
 
   const rawWorkspaceId = c.req.header('X-Workspace-Id');
@@ -98,7 +106,7 @@ internalRoute.post('/accounts-actions', async (c) => {
 
   const ctx = {
     workspaceId,
-    userId: userIdResult.data,
+    userId: userIdResult && userIdResult.success ? userIdResult.data : null,
     requestId,
     user: {
       email: c.req.header('X-XS-User-Email') ?? undefined,
@@ -138,13 +146,27 @@ internalRoute.post('/accounts-actions', async (c) => {
       case 'accounts.workspaces.create':
         validatedPayload = createWorkspacePayloadSchema.parse(rawPayload);
         break;
+      case 'accounts.invites.create':
+        validatedPayload = createWorkspaceInvitePayloadSchema.parse(rawPayload);
+        break;
+      case 'accounts.invites.resolve':
+        validatedPayload = resolveWorkspaceInvitePayloadSchema.parse(rawPayload);
+        break;
+      case 'accounts.invites.accept':
+        validatedPayload = acceptWorkspaceInvitePayloadSchema.parse(rawPayload);
+        break;
       default:
         throw new UnknownActionError(actionKey);
     }
 
     const actionResult = await executeAccountsAction(key, validatedPayload, ctx);
     const status =
-      key === 'accounts.workspaceMember.ensure' || key === 'accounts.workspaces.create' ? 201 : 200;
+      key === 'accounts.workspaceMember.ensure' ||
+      key === 'accounts.workspaces.create' ||
+      key === 'accounts.invites.create' ||
+      key === 'accounts.invites.accept'
+        ? 201
+        : 200;
     return c.json(createSuccessResponse(actionResult, requestId), status);
   } catch (err: unknown) {
     if (err instanceof z.ZodError) {
