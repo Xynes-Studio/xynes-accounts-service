@@ -1,4 +1,5 @@
 import { eq } from 'drizzle-orm';
+import { DomainError } from '@xynes/errors';
 import { db } from '../../infra/db';
 import { workspaces } from '../../infra/db/schema';
 import { NotFoundError } from '../errors';
@@ -13,6 +14,11 @@ export function createReadCurrentWorkspaceHandler({
 }: ReadCurrentWorkspaceDependencies = {}) {
   return async (_payload: unknown, ctx: ActionContext) => {
     void _payload;
+
+    if (!ctx.workspaceId) {
+      throw new DomainError('Missing workspaceId in action context', 'MISSING_CONTEXT', 400);
+    }
+
     const row = await dbClient
       .select()
       .from(workspaces)
