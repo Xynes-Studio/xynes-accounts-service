@@ -11,7 +11,7 @@ Internal-only Accounts service.
 ## Local development
 
 - Docker: uses `.env.dev` via `XYNES_ENV_FILE` default.
-- Local host run: set `XYNES_ENV_FILE=.env.localhsot`.
+- Local host run: set `XYNES_ENV_FILE=.env.localhost`.
 
 Database connectivity is expected via the shared SSH tunnel:
 

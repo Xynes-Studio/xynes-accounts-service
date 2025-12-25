@@ -40,16 +40,19 @@ Reference ADR: `xynes-cms-core/docs/adr/001-testing-strategy.md`.
 
 - `src/app.ts`: Hono app wiring. Mounts only `/internal`.
 - `src/routes/`: HTTP routes (request/response + validation)
-	- `src/routes/internal.route.ts`: `POST /internal/accounts-actions`
+
+  - `src/routes/internal.route.ts`: `POST /internal/accounts-actions`
 - `src/middleware/`: request-id, internal token auth, error handling
 - `src/actions/`: internal action registry, schemas, handlers
-	- `src/actions/register.ts`: action registration
-	- `src/actions/schemas.ts`: strict Zod payload schemas
-	- `src/actions/handlers/*`: action implementations
+
+  - `src/actions/register.ts`: action registration
+  - `src/actions/schemas.ts`: strict Zod payload schemas
+  - `src/actions/handlers/*`: action implementations
 - `src/infra/`: config, logger, DB client, request parsing helpers
 - `tests/`: unit and integration tests
-	- `tests/*.unit.test.ts`: unit/contract tests (no DB)
-	- `tests/*.integration.test.ts`: DB-backed tests (gated)
+
+  - `tests/*.unit.test.ts`: unit/contract tests (no DB)
+  - `tests/*.integration.test.ts`: DB-backed tests (gated)
 
 ## Internal Actions
 
@@ -62,8 +65,22 @@ All behaviour is exposed via the internal “actions” endpoint.
 - `accounts.workspace.readCurrent` → payload `{}` → returns `{ id, name, ... }` (DB)
 - `accounts.workspaceMember.ensure` → payload `{ role?: "member" | "admin" }` → returns `{ created: boolean }` (DB)
 - `accounts.me.getOrCreate` → payload `{}` → returns `{ user, workspaces }` (DB)
+
 	- Requires `X-XS-User-Id` + `X-XS-User-Email`
 	- Does **not** require `X-Workspace-Id`
+
+- `accounts.workspaces.listForUser` → payload `{}` → returns `{ workspaces: Array<{ id, name, slug, planType }> }` (DB)
+
+	- Requires `X-XS-User-Id`
+	- Does **not** require `X-Workspace-Id`
+	- Payload is `z.strict()` (extra keys rejected)
+
+- `accounts.workspaces.create` → payload `{ name, slug }` → returns `{ id, name, slug, planType, createdBy }` (DB)
+
+	- Requires `X-XS-User-Id`
+	- Does **not** require `X-Workspace-Id`
+	- Assigns `workspace_owner` in authz via internal action `authz.assignRole`
+	- If authz assignment fails and cleanup also fails, the workspace may be orphaned; see logs for `[WorkspacesCreate] Cleanup failed ...`
 
 ### Adding a new action (TDD workflow)
 
@@ -89,13 +106,15 @@ Follow ADR-001 order (schema tests → unit logic tests → integration flow tes
 Scripts use `.env.dev` by default (Docker/dev). For local host runs, override:
 
 - Docker/dev: `.env.dev`
-- Local host: `XYNES_ENV_FILE=.env.localhsot`
+- Local host: `XYNES_ENV_FILE=.env.localhost`
 
 Required env vars:
 
 - `PORT`
 - `DATABASE_URL`
 - `INTERNAL_SERVICE_TOKEN`
+- `AUTHZ_SERVICE_URL` (used for workspace role assignment)
+- `AUTHZ_CLIENT_TIMEOUT_MS` (optional; default 5000)
 - `MAX_JSON_BODY_BYTES`
 
 ## Database (via SSH tunnel)
@@ -123,7 +142,8 @@ The dev compose stack lives in `xynes-infra/docker-compose.dev.yml`.
 - Unit tests must not touch real DB/network.
 - Integration tests are gated behind `RUN_INTEGRATION_TESTS=true`.
 - Coverage gate enforces ≥ 80% funcs + lines:
-	- `bun run test:coverage`
+
+  - `bun run test:coverage`
 
 Common commands:
 

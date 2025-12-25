@@ -3,7 +3,9 @@ export type AccountsActionKey =
   | 'accounts.user.readSelf'
   | 'accounts.workspace.readCurrent'
   | 'accounts.workspaceMember.ensure'
-  | 'accounts.me.getOrCreate';
+  | 'accounts.me.getOrCreate'
+  | 'accounts.workspaces.listForUser'
+  | 'accounts.workspaces.create';
 
 export type ActionContext = {
   workspaceId: string | null;
