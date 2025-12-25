@@ -330,17 +330,14 @@ describe('Action handlers (unit, DI)', () => {
   });
 
   it('createWorkspace rejects duplicate slug with CONFLICT', async () => {
+    const uniqueViolation: any = new Error('duplicate key value violates unique constraint');
+    uniqueViolation.code = '23505';
+    uniqueViolation.constraint_name = 'workspaces_slug_unique';
+
     const tx: any = {
-      select: () => ({
-        from: () => ({
-          where: () => ({
-            limit: async () => [{ id: 'ws-existing' }],
-          }),
-        }),
-      }),
       insert: () => ({
         values: async () => {
-          throw new Error('should not insert');
+          throw uniqueViolation;
         },
       }),
     };
