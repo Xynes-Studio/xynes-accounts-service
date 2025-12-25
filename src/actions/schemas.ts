@@ -6,6 +6,8 @@ export const readSelfUserPayloadSchema = z.object({}).strict();
 
 export const readCurrentWorkspacePayloadSchema = z.object({}).strict();
 
+export const meGetOrCreatePayloadSchema = z.object({}).strict();
+
 export const ensureWorkspaceMemberPayloadSchema = z
   .object({
     role: z.enum(['member', 'admin']).optional(),

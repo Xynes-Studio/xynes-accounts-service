@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll } from 'bun:test';
 import app from '../src/app';
 import { INTERNAL_SERVICE_TOKEN } from './support/internal-auth';
 import { registerAccountsActions } from '../src/actions/register';
+import { registerAction } from '../src/actions/registry';
 
 const WORKSPACE_ID = '550e8400-e29b-41d4-a716-446655440000';
 const USER_ID = '550e8400-e29b-41d4-a716-446655440001';
@@ -9,6 +10,19 @@ const USER_ID = '550e8400-e29b-41d4-a716-446655440001';
 describe('Internal Accounts Actions Endpoint (Unit)', () => {
   beforeAll(() => {
     registerAccountsActions();
+
+    // Stub out the /me action so this unit suite doesn't require a real DB.
+    registerAction('accounts.me.getOrCreate', async (_payload: unknown, ctx: any) => {
+      return {
+        user: {
+          id: ctx.userId,
+          email: ctx.user?.email ?? null,
+          displayName: ctx.user?.name ?? null,
+          avatarUrl: ctx.user?.avatarUrl ?? null,
+        },
+        workspaces: [],
+      };
+    });
   });
 
   it('returns 401 for missing X-Internal-Service-Token', async () => {
@@ -67,7 +81,7 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
     expect(body.meta?.requestId).toBeDefined();
   });
 
-  it('returns 400 for missing X-XS-User-Id', async () => {
+  it('returns 401 for missing X-XS-User-Id', async () => {
     const req = new Request('http://localhost/internal/accounts-actions', {
       method: 'POST',
       headers: {
@@ -79,10 +93,10 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
     });
 
     const res = await app.fetch(req);
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(401);
     const body: any = await res.json();
     expect(body.ok).toBe(false);
-    expect(body.error.code).toBe('MISSING_HEADER');
+    expect(body.error.code).toBe('UNAUTHORIZED');
   });
 
   it('returns 400 for invalid header UUIDs', async () => {
@@ -184,6 +198,32 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
     expect(body.ok).toBe(true);
     expect(body.data).toEqual({ pong: true });
     expect(body.meta?.requestId).toBeDefined();
+  });
+
+  it('allows accounts.me.getOrCreate without X-Workspace-Id (workspaceScoped=false)', async () => {
+    const req = new Request('http://localhost/internal/accounts-actions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Internal-Service-Token': INTERNAL_SERVICE_TOKEN,
+        'X-XS-User-Id': USER_ID,
+        'X-XS-User-Email': 'me@example.com',
+        'X-XS-User-Name': 'Me',
+        'X-XS-User-Avatar-Url': 'https://example.com/me.png',
+      },
+      body: JSON.stringify({ actionKey: 'accounts.me.getOrCreate', payload: {} }),
+    });
+
+    const res = await app.fetch(req);
+    expect(res.status).toBe(200);
+    const body: any = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.data).toEqual(
+      expect.objectContaining({
+        user: expect.objectContaining({ id: USER_ID, email: 'me@example.com' }),
+        workspaces: [],
+      }),
+    );
   });
 
   it('returns 413 when request body exceeds configured limit', async () => {

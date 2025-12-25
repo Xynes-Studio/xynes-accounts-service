@@ -17,7 +17,10 @@ Internal-only Accounts service. This service exposes **no public routes**.
 	- `X-Internal-Service-Token: <token>` (must match env `INTERNAL_SERVICE_TOKEN`)
 - Trust boundary (gateway-owned headers):
 	- `X-XS-User-Id` (UUID)
-	- `X-Workspace-Id` (UUID)
+	- `X-Workspace-Id` (UUID) (required for workspace-scoped actions)
+	- `X-XS-User-Email` (string)
+	- `X-XS-User-Name` (string)
+	- `X-XS-User-Avatar-Url` (string)
 - Request envelope:
 	- `{ actionKey: string, payload: unknown }`
 - Response envelope:
@@ -58,6 +61,9 @@ All behaviour is exposed via the internal “actions” endpoint.
 - `accounts.user.readSelf` → payload `{}` → returns `{ id, email, ... }` (DB)
 - `accounts.workspace.readCurrent` → payload `{}` → returns `{ id, name, ... }` (DB)
 - `accounts.workspaceMember.ensure` → payload `{ role?: "member" | "admin" }` → returns `{ created: boolean }` (DB)
+- `accounts.me.getOrCreate` → payload `{}` → returns `{ user, workspaces }` (DB)
+	- Requires `X-XS-User-Id` + `X-XS-User-Email`
+	- Does **not** require `X-Workspace-Id`
 
 ### Adding a new action (TDD workflow)
 

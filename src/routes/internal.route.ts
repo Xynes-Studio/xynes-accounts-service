@@ -18,6 +18,7 @@ import {
   readCurrentWorkspacePayloadSchema,
   readSelfUserPayloadSchema,
   ensureWorkspaceMemberPayloadSchema,
+  meGetOrCreatePayloadSchema,
 } from '../actions/schemas';
 
 const internalRoute = new Hono();
@@ -36,30 +37,13 @@ internalRoute.post('/accounts-actions', async (c) => {
   const requestId = c.get('requestId') || generateRequestId();
   c.set('requestId', requestId);
 
-  const rawWorkspaceId = c.req.header('X-Workspace-Id');
   const rawUserId = c.req.header('X-XS-User-Id');
-
-  if (!rawWorkspaceId) {
-    return c.json(
-      createErrorResponse('MISSING_HEADER', 'X-Workspace-Id header is required', requestId),
-      400,
-    );
-  }
   if (!rawUserId) {
     return c.json(
-      createErrorResponse('MISSING_HEADER', 'X-XS-User-Id header is required', requestId),
-      400,
+      createErrorResponse('UNAUTHORIZED', 'X-XS-User-Id header is required', requestId),
+      401,
     );
   }
-
-  const workspaceIdResult = uuidHeader.safeParse(rawWorkspaceId);
-  if (!workspaceIdResult.success) {
-    return c.json(
-      createErrorResponse('INVALID_HEADER', 'X-Workspace-Id must be a UUID', requestId),
-      400,
-    );
-  }
-
   const userIdResult = uuidHeader.safeParse(rawUserId);
   if (!userIdResult.success) {
     return c.json(
@@ -80,7 +64,40 @@ internalRoute.post('/accounts-actions', async (c) => {
   }
 
   const { actionKey, payload: rawPayload } = result.data;
-  const ctx = { workspaceId: workspaceIdResult.data, userId: userIdResult.data, requestId };
+
+  const key = actionKey as AccountsActionKey;
+  const workspaceRequired = key !== 'accounts.me.getOrCreate';
+
+  const rawWorkspaceId = c.req.header('X-Workspace-Id');
+  if (workspaceRequired && !rawWorkspaceId) {
+    return c.json(
+      createErrorResponse('MISSING_HEADER', 'X-Workspace-Id header is required', requestId),
+      400,
+    );
+  }
+
+  let workspaceId: string | null = null;
+  if (rawWorkspaceId) {
+    const workspaceIdResult = uuidHeader.safeParse(rawWorkspaceId);
+    if (!workspaceIdResult.success) {
+      return c.json(
+        createErrorResponse('INVALID_HEADER', 'X-Workspace-Id must be a UUID', requestId),
+        400,
+      );
+    }
+    workspaceId = workspaceIdResult.data;
+  }
+
+  const ctx = {
+    workspaceId,
+    userId: userIdResult.data,
+    requestId,
+    user: {
+      email: c.req.header('X-XS-User-Email') ?? undefined,
+      name: c.req.header('X-XS-User-Name') ?? undefined,
+      avatarUrl: c.req.header('X-XS-User-Avatar-Url') ?? undefined,
+    },
+  };
 
   logger.info(`Received internal action: ${actionKey}`, {
     workspaceId: ctx.workspaceId,
@@ -91,7 +108,6 @@ internalRoute.post('/accounts-actions', async (c) => {
   try {
     let validatedPayload: unknown;
 
-    const key = actionKey as AccountsActionKey;
     switch (key) {
       case 'accounts.ping':
         validatedPayload = pingPayloadSchema.parse(rawPayload);
@@ -104,6 +120,9 @@ internalRoute.post('/accounts-actions', async (c) => {
         break;
       case 'accounts.workspaceMember.ensure':
         validatedPayload = ensureWorkspaceMemberPayloadSchema.parse(rawPayload);
+        break;
+      case 'accounts.me.getOrCreate':
+        validatedPayload = meGetOrCreatePayloadSchema.parse(rawPayload);
         break;
       default:
         throw new UnknownActionError(actionKey);

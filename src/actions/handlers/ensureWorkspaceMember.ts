@@ -1,4 +1,5 @@
 import { and, eq } from 'drizzle-orm';
+import { DomainError } from '@xynes/errors';
 import { db } from '../../infra/db';
 import { workspaceMembers } from '../../infra/db/schema';
 import type { ActionContext } from '../types';
@@ -15,6 +16,10 @@ export function createEnsureWorkspaceMemberHandler({
   dbClient = db,
 }: EnsureWorkspaceMemberDependencies = {}) {
   return async (payload: EnsureWorkspaceMemberPayload, ctx: ActionContext) => {
+    if (!ctx.workspaceId) {
+      throw new DomainError('Missing workspaceId in action context', 'MISSING_CONTEXT', 400);
+    }
+
     const existing = await dbClient
       .select()
       .from(workspaceMembers)
