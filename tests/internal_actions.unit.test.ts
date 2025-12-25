@@ -23,6 +23,31 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
         workspaces: [],
       };
     });
+
+    // Stub new workspace actions so this unit suite doesn't require DB/network.
+    registerAction('accounts.workspaces.listForUser', async (_payload: unknown, ctx: any) => {
+      return {
+        workspaces: [
+          {
+            id: WORKSPACE_ID,
+            name: 'Acme Inc',
+            slug: 'acme',
+            planType: 'free',
+          },
+        ],
+        userId: ctx.userId,
+      };
+    });
+
+    registerAction('accounts.workspaces.create', async (payload: any, ctx: any) => {
+      return {
+        id: WORKSPACE_ID,
+        name: payload?.name ?? 'Acme Inc',
+        slug: payload?.slug ?? 'acme',
+        planType: 'free',
+        createdBy: ctx.userId,
+      };
+    });
   });
 
   it('returns 401 for missing X-Internal-Service-Token', async () => {
@@ -224,6 +249,100 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
         workspaces: [],
       }),
     );
+  });
+
+  it('allows accounts.workspaces.listForUser without X-Workspace-Id (workspaceScoped=false)', async () => {
+    const req = new Request('http://localhost/internal/accounts-actions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Internal-Service-Token': INTERNAL_SERVICE_TOKEN,
+        'X-XS-User-Id': USER_ID,
+      },
+      body: JSON.stringify({ actionKey: 'accounts.workspaces.listForUser', payload: {} }),
+    });
+
+    const res = await app.fetch(req);
+    expect(res.status).toBe(200);
+    const body: any = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.data).toEqual(
+      expect.objectContaining({
+        userId: USER_ID,
+        workspaces: expect.any(Array),
+      }),
+    );
+  });
+
+  it('rejects accounts.workspaces.listForUser when payload has extra keys (z.strict)', async () => {
+    const req = new Request('http://localhost/internal/accounts-actions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Internal-Service-Token': INTERNAL_SERVICE_TOKEN,
+        'X-XS-User-Id': USER_ID,
+      },
+      body: JSON.stringify({
+        actionKey: 'accounts.workspaces.listForUser',
+        payload: { unexpected: true },
+      }),
+    });
+
+    const res = await app.fetch(req);
+    expect(res.status).toBe(400);
+    const body: any = await res.json();
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('allows accounts.workspaces.create without X-Workspace-Id (workspaceScoped=false)', async () => {
+    const req = new Request('http://localhost/internal/accounts-actions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Internal-Service-Token': INTERNAL_SERVICE_TOKEN,
+        'X-XS-User-Id': USER_ID,
+      },
+      body: JSON.stringify({
+        actionKey: 'accounts.workspaces.create',
+        payload: { name: 'Acme Inc', slug: 'acme' },
+      }),
+    });
+
+    const res = await app.fetch(req);
+    expect(res.status).toBe(201);
+    const body: any = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.data).toEqual(
+      expect.objectContaining({
+        id: WORKSPACE_ID,
+        name: 'Acme Inc',
+        slug: 'acme',
+        planType: 'free',
+        createdBy: USER_ID,
+      }),
+    );
+  });
+
+  it('rejects accounts.workspaces.create for missing required fields', async () => {
+    const req = new Request('http://localhost/internal/accounts-actions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Internal-Service-Token': INTERNAL_SERVICE_TOKEN,
+        'X-XS-User-Id': USER_ID,
+      },
+      body: JSON.stringify({
+        actionKey: 'accounts.workspaces.create',
+        payload: {},
+      }),
+    });
+
+    const res = await app.fetch(req);
+    expect(res.status).toBe(400);
+    const body: any = await res.json();
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('VALIDATION_ERROR');
   });
 
   it('returns 413 when request body exceeds configured limit', async () => {

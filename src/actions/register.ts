@@ -4,6 +4,8 @@ import { readSelfUserHandler } from './handlers/readSelfUser';
 import { readCurrentWorkspaceHandler } from './handlers/readCurrentWorkspace';
 import { ensureWorkspaceMemberHandler } from './handlers/ensureWorkspaceMember';
 import { meGetOrCreateHandler } from './handlers/meGetOrCreate';
+import { listWorkspacesForUserHandler } from './handlers/workspaces/listForUser';
+import { createWorkspaceHandler } from './handlers/workspaces/create';
 
 export function registerAccountsActions() {
   registerAction('accounts.ping', pingHandler);
@@ -11,4 +13,6 @@ export function registerAccountsActions() {
   registerAction('accounts.workspace.readCurrent', readCurrentWorkspaceHandler);
   registerAction('accounts.workspaceMember.ensure', ensureWorkspaceMemberHandler);
   registerAction('accounts.me.getOrCreate', meGetOrCreateHandler);
+  registerAction('accounts.workspaces.listForUser', listWorkspacesForUserHandler);
+  registerAction('accounts.workspaces.create', createWorkspaceHandler);
 }

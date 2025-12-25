@@ -19,6 +19,8 @@ import {
   readSelfUserPayloadSchema,
   ensureWorkspaceMemberPayloadSchema,
   meGetOrCreatePayloadSchema,
+  listWorkspacesForUserPayloadSchema,
+  createWorkspacePayloadSchema,
 } from '../actions/schemas';
 
 const internalRoute = new Hono();
@@ -32,6 +34,12 @@ const actionRequestSchema = z
   .strict();
 
 const uuidHeader = z.string().uuid();
+
+const NON_WORKSPACE_ACTION_KEYS = new Set<AccountsActionKey>([
+  'accounts.me.getOrCreate',
+  'accounts.workspaces.listForUser',
+  'accounts.workspaces.create',
+]);
 
 internalRoute.post('/accounts-actions', async (c) => {
   const requestId = c.get('requestId') || generateRequestId();
@@ -66,7 +74,7 @@ internalRoute.post('/accounts-actions', async (c) => {
   const { actionKey, payload: rawPayload } = result.data;
 
   const key = actionKey as AccountsActionKey;
-  const workspaceRequired = key !== 'accounts.me.getOrCreate';
+  const workspaceRequired = !NON_WORKSPACE_ACTION_KEYS.has(key);
 
   const rawWorkspaceId = c.req.header('X-Workspace-Id');
   if (workspaceRequired && !rawWorkspaceId) {
@@ -124,12 +132,19 @@ internalRoute.post('/accounts-actions', async (c) => {
       case 'accounts.me.getOrCreate':
         validatedPayload = meGetOrCreatePayloadSchema.parse(rawPayload);
         break;
+      case 'accounts.workspaces.listForUser':
+        validatedPayload = listWorkspacesForUserPayloadSchema.parse(rawPayload);
+        break;
+      case 'accounts.workspaces.create':
+        validatedPayload = createWorkspacePayloadSchema.parse(rawPayload);
+        break;
       default:
         throw new UnknownActionError(actionKey);
     }
 
     const actionResult = await executeAccountsAction(key, validatedPayload, ctx);
-    const status = key === 'accounts.workspaceMember.ensure' ? 201 : 200;
+    const status =
+      key === 'accounts.workspaceMember.ensure' || key === 'accounts.workspaces.create' ? 201 : 200;
     return c.json(createSuccessResponse(actionResult, requestId), status);
   } catch (err: unknown) {
     if (err instanceof z.ZodError) {

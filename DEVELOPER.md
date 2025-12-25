@@ -65,6 +65,16 @@ All behaviour is exposed via the internal “actions” endpoint.
 	- Requires `X-XS-User-Id` + `X-XS-User-Email`
 	- Does **not** require `X-Workspace-Id`
 
+- `accounts.workspaces.listForUser` → payload `{}` → returns `{ workspaces: Array<{ id, name, slug, planType }> }` (DB)
+	- Requires `X-XS-User-Id`
+	- Does **not** require `X-Workspace-Id`
+	- Payload is `z.strict()` (extra keys rejected)
+
+- `accounts.workspaces.create` → payload `{ name, slug }` → returns `{ id, name, slug, planType, createdBy }` (DB)
+	- Requires `X-XS-User-Id`
+	- Does **not** require `X-Workspace-Id`
+	- Assigns `workspace_owner` in authz via internal action `authz.assignRole`
+
 ### Adding a new action (TDD workflow)
 
 Follow ADR-001 order (schema tests → unit logic tests → integration flow test):
@@ -89,13 +99,14 @@ Follow ADR-001 order (schema tests → unit logic tests → integration flow tes
 Scripts use `.env.dev` by default (Docker/dev). For local host runs, override:
 
 - Docker/dev: `.env.dev`
-- Local host: `XYNES_ENV_FILE=.env.localhsot`
+- Local host: `XYNES_ENV_FILE=.env.localhost`
 
 Required env vars:
 
 - `PORT`
 - `DATABASE_URL`
 - `INTERNAL_SERVICE_TOKEN`
+- `AUTHZ_SERVICE_URL` (used for workspace role assignment)
 - `MAX_JSON_BODY_BYTES`
 
 ## Database (via SSH tunnel)
