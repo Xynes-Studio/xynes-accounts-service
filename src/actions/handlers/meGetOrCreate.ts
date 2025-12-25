@@ -44,6 +44,10 @@ export function createMeGetOrCreateHandler({ dbClient = db }: MeGetOrCreateDepen
   return async (_payload: unknown, ctx: ActionContext): Promise<MeGetOrCreateResult> => {
     void _payload;
 
+    if (!ctx.userId) {
+      throw new DomainError('Missing userId in auth context', 'UNAUTHORIZED', 401);
+    }
+
     const emailResult = userEmailSchema.safeParse(ctx.user?.email);
     if (!emailResult.success) {
       throw new DomainError('Missing or invalid user email in auth context', 'UNAUTHORIZED', 401);

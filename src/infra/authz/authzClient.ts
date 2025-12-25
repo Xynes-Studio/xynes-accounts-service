@@ -6,8 +6,15 @@ export type AssignRoleRequest = {
   roleKey: string;
 };
 
+export type CheckPermissionRequest = {
+  userId: string;
+  workspaceId: string | null;
+  actionKey: string;
+};
+
 export type AuthzClient = {
   assignRole: (req: AssignRoleRequest) => Promise<void>;
+  checkPermission: (req: CheckPermissionRequest) => Promise<boolean>;
 };
 
 export type CreateAuthzClientDeps = {
@@ -30,9 +37,11 @@ export function createAuthzClient({
     throw new DomainError('INTERNAL_SERVICE_TOKEN is not set', 'INTERNAL_ERROR', 500);
   }
 
-  let endpoint: string;
+  let actionEndpoint: string;
+  let checkEndpoint: string;
   try {
-    endpoint = new URL('/internal/authz-actions', baseUrl).toString();
+    actionEndpoint = new URL('/internal/authz-actions', baseUrl).toString();
+    checkEndpoint = new URL('/authz/check', baseUrl).toString();
   } catch (err) {
     throw new DomainError('AUTHZ_SERVICE_URL is invalid', 'INTERNAL_ERROR', 500, { cause: err });
   }
@@ -50,7 +59,7 @@ export function createAuthzClient({
 
       let res: Response;
       try {
-        res = await fetchImpl(endpoint, {
+        res = await fetchImpl(actionEndpoint, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -75,6 +84,49 @@ export function createAuthzClient({
         // Avoid leaking details; downstream should log with requestId.
         throw new DomainError('Failed to assign role via authz service', 'BAD_GATEWAY', 502);
       }
+    },
+
+    async checkPermission(payload: CheckPermissionRequest): Promise<boolean> {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), resolvedTimeoutMs);
+
+      let res: Response;
+      try {
+        res = await fetchImpl(checkEndpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Internal-Service-Token': internalServiceToken,
+          },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+      } catch (err: any) {
+        if (err?.name === 'AbortError') {
+          throw new DomainError('Authz service request timed out', 'GATEWAY_TIMEOUT', 504);
+        }
+        throw new DomainError('Failed to reach authz service', 'BAD_GATEWAY', 502, { cause: err });
+      } finally {
+        clearTimeout(timeoutId);
+      }
+
+      if (!res.ok) {
+        return false;
+      }
+
+      const parsed: unknown = await res.json().catch(() => null);
+      if (!parsed || typeof parsed !== 'object') return false;
+
+      const record = parsed as Record<string, unknown>;
+      if ('allowed' in record) return record.allowed === true;
+
+      // Support envelope responses: { ok: true, data: { allowed: boolean } }
+      if (record.ok === true && record.data && typeof record.data === 'object') {
+        const data = record.data as Record<string, unknown>;
+        return data.allowed === true;
+      }
+
+      return false;
     },
   };
 }

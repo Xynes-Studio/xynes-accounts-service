@@ -19,6 +19,9 @@ export function createEnsureWorkspaceMemberHandler({
     if (!ctx.workspaceId) {
       throw new DomainError('Missing workspaceId in action context', 'MISSING_CONTEXT', 400);
     }
+    if (!ctx.userId) {
+      throw new DomainError('Missing userId in auth context', 'UNAUTHORIZED', 401);
+    }
 
     const existing = await dbClient
       .select()
@@ -35,8 +38,9 @@ export function createEnsureWorkspaceMemberHandler({
       return { created: false, status: existing[0].status };
     }
 
-    // Role is accepted but currently mapped to status only; kept for forward-compat.
-    const status = payload.role === 'admin' ? 'active' : 'active';
+    // Role is accepted but currently ignored; reserved for forward-compat.
+    void payload;
+    const status = 'active' as const;
     await dbClient.insert(workspaceMembers).values({
       workspaceId: ctx.workspaceId,
       userId: ctx.userId,

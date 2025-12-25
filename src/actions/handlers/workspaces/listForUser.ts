@@ -1,4 +1,5 @@
 import { and, eq } from 'drizzle-orm';
+import { DomainError } from '@xynes/errors';
 import { db } from '../../../infra/db';
 import { workspaceMembers, workspaces } from '../../../infra/db/schema';
 import type { ActionContext } from '../../types';
@@ -21,6 +22,10 @@ export function createListWorkspacesForUserHandler({
 }: ListWorkspacesForUserDependencies = {}) {
   return async (_payload: unknown, ctx: ActionContext): Promise<ListWorkspacesForUserResult> => {
     void _payload;
+
+    if (!ctx.userId) {
+      throw new DomainError('Missing userId in auth context', 'UNAUTHORIZED', 401);
+    }
 
     const rows = await dbClient
       .select({

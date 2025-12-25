@@ -28,3 +28,22 @@ export const createWorkspacePayloadSchema = z
       }),
   })
   .strict();
+
+export const createWorkspaceInvitePayloadSchema = z
+  .object({
+    email: z.string().trim().toLowerCase().email().max(320),
+    roleKey: z.string().trim().min(1).max(128),
+  })
+  .strict();
+
+export const resolveWorkspaceInvitePayloadSchema = z
+  .object({
+    token: z.string().trim().min(32).max(512),
+  })
+  .passthrough();
+
+export const acceptWorkspaceInvitePayloadSchema = z
+  .object({
+    token: z.string().trim().min(32).max(512),
+  })
+  .passthrough();

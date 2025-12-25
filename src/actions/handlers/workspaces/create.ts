@@ -45,6 +45,11 @@ export function createCreateWorkspaceHandler({
     payload: CreateWorkspacePayload,
     ctx: ActionContext,
   ): Promise<CreateWorkspaceResult> => {
+    if (!ctx.userId) {
+      throw new DomainError('Missing userId in auth context', 'UNAUTHORIZED', 401);
+    }
+
+    const userId = ctx.userId;
     const workspaceId = idFactory();
 
     const resolvedAuthzClient = authzClient ?? createAuthzClient();
@@ -57,12 +62,12 @@ export function createCreateWorkspaceHandler({
           id: workspaceId,
           name: payload.name,
           slug: payload.slug,
-          createdBy: ctx.userId,
+          createdBy: userId,
         });
 
         await tx.insert(workspaceMembers).values({
           workspaceId,
-          userId: ctx.userId,
+          userId,
           status: 'active',
         });
       });
@@ -83,7 +88,7 @@ export function createCreateWorkspaceHandler({
 
     try {
       await resolvedAuthzClient.assignRole({
-        userId: ctx.userId,
+        userId,
         workspaceId,
         roleKey: 'workspace_owner',
       });
@@ -103,7 +108,7 @@ export function createCreateWorkspaceHandler({
         logger.error('[WorkspacesCreate] Cleanup failed after authz role assignment failure', {
           requestId: ctx.requestId,
           workspaceId,
-          userId: ctx.userId,
+          userId,
           error: cleanupErr,
         });
       }
