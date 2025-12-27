@@ -12,7 +12,17 @@ Internal-only Accounts service. This service exposes **no public routes**.
 
 ## Contract
 
-- Only internal endpoint: `POST /internal/accounts-actions`
+### Health & Readiness (public, no auth)
+
+- `GET /health` – Liveness probe (always returns 200 if service is running)
+  - Response: `{ "status": "ok", "service": "xynes-accounts-service" }`
+- `GET /ready` – Readiness probe (checks DB connectivity)
+  - Success (200): `{ "status": "ready" }`
+  - Failure (503): `{ "status": "not_ready", "error": "<message>" }`
+
+### Internal Actions (requires auth)
+
+- Endpoint: `POST /internal/accounts-actions`
 - Requires internal auth header:
 	- `X-Internal-Service-Token: <token>` (must match env `INTERNAL_SERVICE_TOKEN`)
 - Trust boundary (gateway-owned headers):
@@ -38,9 +48,15 @@ Reference ADR: `xynes-cms-core/docs/adr/001-testing-strategy.md`.
 
 ## Folder Structure
 
-- `src/app.ts`: Hono app wiring. Mounts only `/internal`.
+- `src/app.ts`: Hono app wiring. Mounts `/health`, `/ready`, and `/internal`.
+- `src/controllers/`: Controller logic (separated from routing)
+
+  - `src/controllers/health.controller.ts`: Liveness check handler
+  - `src/controllers/ready.controller.ts`: Readiness check handler (DB connectivity)
 - `src/routes/`: HTTP routes (request/response + validation)
 
+  - `src/routes/health.route.ts`: `GET /health` (liveness)
+  - `src/routes/ready.route.ts`: `GET /ready` (readiness)
   - `src/routes/internal.route.ts`: `POST /internal/accounts-actions`
 - `src/middleware/`: request-id, internal token auth, error handling
 - `src/actions/`: internal action registry, schemas, handlers
