@@ -218,7 +218,11 @@ describe('Workspace invites (unit, DI)', () => {
       },
     };
 
-    const handler = createAcceptWorkspaceInviteHandler({ dbClient, authzClient });
+    const handler = createAcceptWorkspaceInviteHandler({
+      dbClient,
+      authzClient,
+      now: () => new Date('2025-01-01T00:00:00.000Z'),
+    });
     const result = await handler({ token: 'raw-token' }, authedCtx as any);
 
     expect(result.accepted).toBe(true);
