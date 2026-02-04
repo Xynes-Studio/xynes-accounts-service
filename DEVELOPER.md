@@ -91,6 +91,12 @@ All behaviour is exposed via the internal “actions” endpoint.
 	- Does **not** require `X-Workspace-Id`
 	- Payload is `z.strict()` (extra keys rejected)
 
+- `accounts.workspace_members.listForWorkspace` → payload `{}` → returns `{ members: Array<{ userId, email, displayName, avatarUrl, status, joinedAt, roleKey }> }` (DB)
+
+	- Requires `X-XS-User-Id`
+	- Requires `X-Workspace-Id`
+	- RBAC enforced via authz `POST /authz/check` for `accounts.workspace_members.listForWorkspace`
+
 - `accounts.workspaces.create` → payload `{ name, slug }` → returns `{ id, name, slug, planType, createdBy }` (DB)
 
 	- Requires `X-XS-User-Id`

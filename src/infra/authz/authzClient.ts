@@ -12,9 +12,20 @@ export type CheckPermissionRequest = {
   actionKey: string;
 };
 
+export type ListRolesForWorkspaceRequest = {
+  workspaceId: string;
+  userIds?: string[];
+};
+
+export type WorkspaceRoleAssignment = {
+  userId: string;
+  roleKey: string;
+};
+
 export type AuthzClient = {
   assignRole: (req: AssignRoleRequest) => Promise<void>;
   checkPermission: (req: CheckPermissionRequest) => Promise<boolean>;
+  listRolesForWorkspace: (req: ListRolesForWorkspaceRequest) => Promise<WorkspaceRoleAssignment[]>;
 };
 
 export type CreateAuthzClientDeps = {
@@ -127,6 +138,59 @@ export function createAuthzClient({
       }
 
       return false;
+    },
+
+    async listRolesForWorkspace(
+      payload: ListRolesForWorkspaceRequest,
+    ): Promise<WorkspaceRoleAssignment[]> {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), resolvedTimeoutMs);
+
+      let res: Response;
+      try {
+        res = await fetchImpl(actionEndpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Internal-Service-Token': internalServiceToken,
+          },
+          body: JSON.stringify({
+            actionKey: 'authz.listRolesForWorkspace',
+            payload,
+          }),
+          signal: controller.signal,
+        });
+      } catch (err: any) {
+        if (err?.name === 'AbortError') {
+          throw new DomainError('Authz service request timed out', 'GATEWAY_TIMEOUT', 504);
+        }
+        throw new DomainError('Failed to reach authz service', 'BAD_GATEWAY', 502, {
+          cause: err,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
+
+      if (!res.ok) {
+        throw new DomainError('Failed to list roles via authz service', 'BAD_GATEWAY', 502);
+      }
+
+      const parsed: unknown = await res.json().catch(() => null);
+      if (!parsed || typeof parsed !== 'object') return [];
+
+      const record = parsed as Record<string, unknown>;
+      if (record.ok === true && record.data && typeof record.data === 'object') {
+        const data = record.data as Record<string, unknown>;
+        const roles = data.roles;
+        if (Array.isArray(roles)) {
+          return roles.filter(
+            (entry) =>
+              entry && typeof entry === 'object' && 'userId' in entry && 'roleKey' in entry,
+          ) as WorkspaceRoleAssignment[];
+        }
+      }
+
+      return [];
     },
   };
 }
