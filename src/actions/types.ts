@@ -6,6 +6,7 @@ export type AccountsActionKey =
   | 'accounts.me.getOrCreate'
   | 'accounts.workspaces.listForUser'
   | 'accounts.workspaces.create'
+  | 'accounts.workspace_members.listForWorkspace'
   | 'accounts.invites.create'
   | 'accounts.invites.resolve'
   | 'accounts.invites.accept';

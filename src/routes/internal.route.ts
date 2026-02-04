@@ -20,6 +20,7 @@ import {
   ensureWorkspaceMemberPayloadSchema,
   meGetOrCreatePayloadSchema,
   listWorkspacesForUserPayloadSchema,
+  listWorkspaceMembersPayloadSchema,
   createWorkspacePayloadSchema,
   createWorkspaceInvitePayloadSchema,
   resolveWorkspaceInvitePayloadSchema,
@@ -142,6 +143,9 @@ internalRoute.post('/accounts-actions', async (c) => {
         break;
       case 'accounts.workspaces.listForUser':
         validatedPayload = listWorkspacesForUserPayloadSchema.parse(rawPayload);
+        break;
+      case 'accounts.workspace_members.listForWorkspace':
+        validatedPayload = listWorkspaceMembersPayloadSchema.parse(rawPayload);
         break;
       case 'accounts.workspaces.create':
         validatedPayload = createWorkspacePayloadSchema.parse(rawPayload);

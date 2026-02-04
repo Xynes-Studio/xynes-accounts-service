@@ -16,6 +16,8 @@ export const ensureWorkspaceMemberPayloadSchema = z
 
 export const listWorkspacesForUserPayloadSchema = z.object({}).strict();
 
+export const listWorkspaceMembersPayloadSchema = z.object({}).strict();
+
 export const createWorkspacePayloadSchema = z
   .object({
     name: z.string().trim().min(1).max(200),

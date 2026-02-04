@@ -5,6 +5,7 @@ import { readCurrentWorkspaceHandler } from './handlers/readCurrentWorkspace';
 import { ensureWorkspaceMemberHandler } from './handlers/ensureWorkspaceMember';
 import { meGetOrCreateHandler } from './handlers/meGetOrCreate';
 import { listWorkspacesForUserHandler } from './handlers/workspaces/listForUser';
+import { listWorkspaceMembersHandler } from './handlers/workspaces/listMembers';
 import { createWorkspaceHandler } from './handlers/workspaces/create';
 import { createWorkspaceInviteHandler } from './handlers/invites/create';
 import { resolveWorkspaceInviteHandler } from './handlers/invites/resolve';
@@ -18,6 +19,7 @@ export function registerAccountsActions() {
   registerAction('accounts.me.getOrCreate', meGetOrCreateHandler);
   registerAction('accounts.workspaces.listForUser', listWorkspacesForUserHandler);
   registerAction('accounts.workspaces.create', createWorkspaceHandler);
+  registerAction('accounts.workspace_members.listForWorkspace', listWorkspaceMembersHandler);
   registerAction('accounts.invites.create', createWorkspaceInviteHandler);
   registerAction('accounts.invites.resolve', resolveWorkspaceInviteHandler);
   registerAction('accounts.invites.accept', acceptWorkspaceInviteHandler);
