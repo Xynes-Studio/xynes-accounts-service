@@ -98,11 +98,17 @@ describe('Workspace invites (unit, DI)', () => {
 
   it('resolve marks pending invites as expired when past expiresAt', async () => {
     const selectRow = {
+      id: 'invite-1',
+      workspaceId: 'workspace-1',
+      workspaceSlug: 'acme',
       workspaceName: 'Acme',
       inviterName: 'Owner',
+      inviterEmail: 'owner@acme.com',
+      inviteeEmail: 'invitee@acme.com',
       roleKey: 'workspace_member',
       status: 'pending',
       expiresAt: new Date('2025-01-01T00:00:00.000Z'),
+      createdAt: new Date('2024-12-31T00:00:00.000Z'),
       inviteId: 'invite-1',
     };
 
@@ -143,7 +149,18 @@ describe('Workspace invites (unit, DI)', () => {
       userId: null,
       workspaceId: null,
     } as any);
+    expect(result.id).toBe('invite-1');
+    expect(result.workspaceId).toBe('workspace-1');
+    expect(result.workspaceSlug).toBe('acme');
+    expect(result.workspaceName).toBe('Acme');
+    expect(result.inviterName).toBe('Owner');
+    expect(result.inviterEmail).toBe('owner@acme.com');
+    expect(result.inviteeEmail).toBe('invitee@acme.com');
+    expect(result.role).toBe('workspace_member');
+    expect(result.roleKey).toBe('workspace_member');
+    expect(result.createdAt).toBe('2024-12-31T00:00:00.000Z');
     expect(result.status).toBe('expired');
+    expect(result.expiresAt).toBe('2025-01-01T00:00:00.000Z');
     expect(updated).toBe(true);
   });
 
@@ -182,13 +199,32 @@ describe('Workspace invites (unit, DI)', () => {
             }),
           };
         }
-        return {
-          from: () => ({
-            where: () => ({
-              limit: async () => [],
+        if (selectCall === 3) {
+          return {
+            from: () => ({
+              where: () => ({
+                limit: async () => [],
+              }),
             }),
-          }),
-        };
+          };
+        }
+        if (selectCall === 4) {
+          return {
+            from: () => ({
+              where: () => ({
+                limit: async () => [
+                  {
+                    id: authedCtx.workspaceId,
+                    name: 'Acme',
+                    slug: 'acme',
+                    planType: 'free',
+                  },
+                ],
+              }),
+            }),
+          };
+        }
+        throw new Error(`Unexpected select call #${selectCall}`);
       },
       insert: (table: any) => ({
         values: async (row: any) => {
@@ -229,6 +265,13 @@ describe('Workspace invites (unit, DI)', () => {
     expect(result.workspaceId).toBe(authedCtx.workspaceId);
     expect(result.roleKey).toBe('workspace_member');
     expect(result.workspaceMemberCreated).toBe(true);
+    expect(result.workspace).toEqual({
+      id: authedCtx.workspaceId,
+      name: 'Acme',
+      slug: 'acme',
+      planType: 'free',
+      role: 'workspace_member',
+    });
 
     expect(insertedMembers[0]).toMatchObject({
       workspaceId: authedCtx.workspaceId,

@@ -2,7 +2,7 @@ import { and, eq } from 'drizzle-orm';
 import { DomainError } from '@xynes/errors';
 
 import { db } from '../../../infra/db';
-import { users, workspaceInvites, workspaceMembers } from '../../../infra/db/schema';
+import { users, workspaceInvites, workspaceMembers, workspaces } from '../../../infra/db/schema';
 import { createAuthzClient, type AuthzClient } from '../../../infra/authz/authzClient';
 import { hashInviteToken } from '../../../infra/security/inviteToken';
 import { NotFoundError } from '../../errors';
@@ -17,6 +17,13 @@ export type AcceptWorkspaceInviteResult = {
   workspaceId: string;
   roleKey: string;
   workspaceMemberCreated: boolean;
+  workspace: {
+    id: string;
+    name: string;
+    slug: string | null;
+    planType: string;
+    role: string;
+  };
 };
 
 export type AcceptWorkspaceInviteDependencies = {
@@ -159,11 +166,33 @@ export function createAcceptWorkspaceInviteHandler({
       throw new DomainError('Failed to assign role via authz service', 'BAD_GATEWAY', 502);
     }
 
+    const workspaceRows = await dbClient
+      .select({
+        id: workspaces.id,
+        name: workspaces.name,
+        slug: workspaces.slug,
+        planType: workspaces.planType,
+      })
+      .from(workspaces)
+      .where(eq(workspaces.id, invite.workspaceId))
+      .limit(1);
+    const workspace = workspaceRows[0];
+    if (!workspace) {
+      throw new DomainError('Workspace not found for accepted invite', 'INTERNAL_ERROR', 500);
+    }
+
     return {
       accepted: true,
       workspaceId: invite.workspaceId,
       roleKey: invite.roleKey,
       workspaceMemberCreated,
+      workspace: {
+        id: workspace.id,
+        name: workspace.name,
+        slug: workspace.slug ?? null,
+        planType: workspace.planType,
+        role: invite.roleKey,
+      },
     };
   };
 }

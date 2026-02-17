@@ -3,7 +3,9 @@ import { DomainError } from '@xynes/errors';
 import { z } from 'zod';
 import { db } from '../../infra/db';
 import { users, workspaceMembers, workspaces } from '../../infra/db/schema';
+import { createAuthzClient, type AuthzClient } from '../../infra/authz/authzClient';
 import type { ActionContext } from '../types';
+import { resolveWorkspaceRoleForUser, type WorkspaceRole } from './workspaces/resolveWorkspaceRole';
 
 export type MeGetOrCreateResult = {
   user: {
@@ -17,11 +19,13 @@ export type MeGetOrCreateResult = {
     name: string;
     slug: string | null;
     planType: string;
+    role: WorkspaceRole;
   }>;
 };
 
 export type MeGetOrCreateDependencies = {
   dbClient?: typeof db;
+  authzClient?: AuthzClient;
 };
 
 function normalizeOptionalString(value: unknown): string | undefined {
@@ -40,7 +44,10 @@ function normalizeOptionalStringWithMaxLen(value: unknown, maxLen: number): stri
 
 const userEmailSchema = z.string().trim().email().max(320);
 
-export function createMeGetOrCreateHandler({ dbClient = db }: MeGetOrCreateDependencies = {}) {
+export function createMeGetOrCreateHandler({
+  dbClient = db,
+  authzClient,
+}: MeGetOrCreateDependencies = {}) {
   return async (_payload: unknown, ctx: ActionContext): Promise<MeGetOrCreateResult> => {
     void _payload;
 
@@ -100,6 +107,27 @@ export function createMeGetOrCreateHandler({ dbClient = db }: MeGetOrCreateDepen
       .innerJoin(workspaces, eq(workspaceMembers.workspaceId, workspaces.id))
       .where(and(eq(workspaceMembers.userId, ctx.userId), eq(workspaceMembers.status, 'active')));
 
+    let workspacesWithRoles: MeGetOrCreateResult['workspaces'] = [];
+    if (workspaceRows.length > 0) {
+      const resolvedAuthzClient = authzClient ?? createAuthzClient();
+      workspacesWithRoles = await Promise.all(
+        workspaceRows.map(async (workspace) => {
+          const role = await resolveWorkspaceRoleForUser(
+            resolvedAuthzClient,
+            workspace.id,
+            ctx.userId as string,
+          );
+          return {
+            id: workspace.id,
+            name: workspace.name,
+            slug: workspace.slug ?? null,
+            planType: workspace.planType,
+            role,
+          };
+        }),
+      );
+    }
+
     return {
       user: {
         id: userRow.id,
@@ -107,12 +135,7 @@ export function createMeGetOrCreateHandler({ dbClient = db }: MeGetOrCreateDepen
         displayName: userRow.displayName ?? null,
         avatarUrl: userRow.avatarUrl ?? null,
       },
-      workspaces: workspaceRows.map((w) => ({
-        id: w.id,
-        name: w.name,
-        slug: w.slug ?? null,
-        planType: w.planType,
-      })),
+      workspaces: workspacesWithRoles,
     };
   };
 }

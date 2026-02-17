@@ -11,11 +11,18 @@ export type ResolveWorkspaceInvitePayload = {
 };
 
 export type ResolveWorkspaceInviteResult = {
+  id: string;
+  workspaceId: string;
+  workspaceSlug: string | null;
   workspaceName: string;
   inviterName: string | null;
+  inviterEmail: string | null;
+  inviteeEmail: string;
+  role: string;
   roleKey: string;
   status: string;
   expiresAt: string;
+  createdAt: string;
 };
 
 export type ResolveWorkspaceInviteDependencies = {
@@ -36,11 +43,17 @@ export function createResolveWorkspaceInviteHandler({
 
     const rows = await dbClient
       .select({
+        id: workspaceInvites.id,
+        workspaceId: workspaceInvites.workspaceId,
+        workspaceSlug: workspaces.slug,
         workspaceName: workspaces.name,
         inviterName: users.displayName,
+        inviterEmail: users.email,
+        inviteeEmail: workspaceInvites.email,
         roleKey: workspaceInvites.roleKey,
         status: workspaceInvites.status,
         expiresAt: workspaceInvites.expiresAt,
+        createdAt: workspaceInvites.createdAt,
         inviteId: workspaceInvites.id,
       })
       .from(workspaceInvites)
@@ -75,11 +88,18 @@ export function createResolveWorkspaceInviteHandler({
     }
 
     return {
+      id: invite.id,
+      workspaceId: invite.workspaceId,
+      workspaceSlug: invite.workspaceSlug ?? null,
       workspaceName: invite.workspaceName,
       inviterName: invite.inviterName ?? null,
+      inviterEmail: invite.inviterEmail ?? null,
+      inviteeEmail: invite.inviteeEmail,
+      role: invite.roleKey,
       roleKey: invite.roleKey,
       status,
       expiresAt: invite.expiresAt.toISOString(),
+      createdAt: invite.createdAt.toISOString(),
     };
   };
 }

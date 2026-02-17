@@ -48,6 +48,39 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
         createdBy: ctx.userId,
       };
     });
+
+    registerAction('accounts.invites.resolve', async () => {
+      return {
+        id: 'invite-1',
+        workspaceId: WORKSPACE_ID,
+        workspaceSlug: 'acme',
+        workspaceName: 'Acme Inc',
+        inviterName: 'Owner',
+        inviterEmail: 'owner@acme.com',
+        inviteeEmail: 'invitee@acme.com',
+        role: 'workspace_member',
+        roleKey: 'workspace_member',
+        status: 'pending',
+        expiresAt: '2026-01-01T00:00:00.000Z',
+        createdAt: '2025-01-01T00:00:00.000Z',
+      };
+    });
+
+    registerAction('accounts.invites.accept', async () => {
+      return {
+        accepted: true,
+        workspaceId: WORKSPACE_ID,
+        roleKey: 'workspace_member',
+        workspaceMemberCreated: true,
+        workspace: {
+          id: WORKSPACE_ID,
+          name: 'Acme Inc',
+          slug: 'acme',
+          planType: 'free',
+          role: 'workspace_member',
+        },
+      };
+    });
   });
 
   it('returns 401 for missing X-Internal-Service-Token', async () => {
@@ -343,6 +376,66 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
     const body: any = await res.json();
     expect(body.ok).toBe(false);
     expect(body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('allows public accounts.invites.resolve without user/workspace headers', async () => {
+    const req = new Request('http://localhost/internal/accounts-actions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Internal-Service-Token': INTERNAL_SERVICE_TOKEN,
+      },
+      body: JSON.stringify({
+        actionKey: 'accounts.invites.resolve',
+        payload: { token: 'x'.repeat(64) },
+      }),
+    });
+
+    const res = await app.fetch(req);
+    expect(res.status).toBe(200);
+    const body: any = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.data).toEqual(
+      expect.objectContaining({
+        id: 'invite-1',
+        workspaceId: WORKSPACE_ID,
+        workspaceSlug: 'acme',
+        role: 'workspace_member',
+        roleKey: 'workspace_member',
+      }),
+    );
+  });
+
+  it('allows accounts.invites.accept without workspace header and returns 201', async () => {
+    const req = new Request('http://localhost/internal/accounts-actions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Internal-Service-Token': INTERNAL_SERVICE_TOKEN,
+        'X-XS-User-Id': USER_ID,
+      },
+      body: JSON.stringify({
+        actionKey: 'accounts.invites.accept',
+        payload: { token: 'x'.repeat(64) },
+      }),
+    });
+
+    const res = await app.fetch(req);
+    expect(res.status).toBe(201);
+    const body: any = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.data).toEqual(
+      expect.objectContaining({
+        accepted: true,
+        workspaceId: WORKSPACE_ID,
+        roleKey: 'workspace_member',
+        workspace: expect.objectContaining({
+          id: WORKSPACE_ID,
+          slug: 'acme',
+          role: 'workspace_member',
+        }),
+      }),
+    );
   });
 
   it('returns 413 when request body exceeds configured limit', async () => {
