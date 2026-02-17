@@ -227,14 +227,35 @@ describe('Action handlers (unit, DI)', () => {
       },
     };
 
-    const handler = createMeGetOrCreateHandler({ dbClient });
+    const authzClient: any = {
+      listRolesForWorkspace: async ({ workspaceId }: { workspaceId: string }) => {
+        if (workspaceId === 'ws-1') {
+          return [{ userId: ctx.userId, roleKey: 'workspace_owner' }];
+        }
+        return [{ userId: ctx.userId, roleKey: 'workspace_member' }];
+      },
+    };
+
+    const handler = createMeGetOrCreateHandler({ dbClient, authzClient });
     const result = await handler({}, ctx as any);
     expect(result.workspaces).toHaveLength(2);
     expect(result.workspaces[0]).toEqual(
-      expect.objectContaining({ id: 'ws-1', name: 'Acme', slug: 'acme', planType: 'free' }),
+      expect.objectContaining({
+        id: 'ws-1',
+        name: 'Acme',
+        slug: 'acme',
+        planType: 'free',
+        role: 'workspace_owner',
+      }),
     );
     expect(result.workspaces[1]).toEqual(
-      expect.objectContaining({ id: 'ws-2', name: 'Beta', slug: null, planType: 'pro' }),
+      expect.objectContaining({
+        id: 'ws-2',
+        name: 'Beta',
+        slug: null,
+        planType: 'pro',
+        role: 'workspace_member',
+      }),
     );
   });
 
@@ -252,12 +273,36 @@ describe('Action handlers (unit, DI)', () => {
       }),
     };
 
-    const handler = createListWorkspacesForUserHandler({ dbClient });
+    const authzClient: any = {
+      listRolesForWorkspace: async ({ workspaceId }: { workspaceId: string }) => {
+        if (workspaceId === 'ws-1') {
+          return [{ userId: ctx.userId, roleKey: 'workspace_owner' }];
+        }
+        return [];
+      },
+    };
+
+    const handler = createListWorkspacesForUserHandler({ dbClient, authzClient });
     const result = await handler({}, ctx as any);
 
     expect(result.workspaces).toHaveLength(2);
     expect(result.workspaces[0]).toEqual(
-      expect.objectContaining({ id: 'ws-1', name: 'Acme', slug: 'acme', planType: 'free' }),
+      expect.objectContaining({
+        id: 'ws-1',
+        name: 'Acme',
+        slug: 'acme',
+        planType: 'free',
+        role: 'workspace_owner',
+      }),
+    );
+    expect(result.workspaces[1]).toEqual(
+      expect.objectContaining({
+        id: 'ws-2',
+        name: 'Beta',
+        slug: null,
+        planType: 'pro',
+        role: 'workspace_member',
+      }),
     );
   });
 

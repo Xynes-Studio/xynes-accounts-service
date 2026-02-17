@@ -80,12 +80,12 @@ All behaviour is exposed via the internal “actions” endpoint.
 - `accounts.user.readSelf` → payload `{}` → returns `{ id, email, ... }` (DB)
 - `accounts.workspace.readCurrent` → payload `{}` → returns `{ id, name, ... }` (DB)
 - `accounts.workspaceMember.ensure` → payload `{ role?: "member" | "admin" }` → returns `{ created: boolean }` (DB)
-- `accounts.me.getOrCreate` → payload `{}` → returns `{ user, workspaces }` (DB)
+- `accounts.me.getOrCreate` → payload `{}` → returns `{ user, workspaces }` (DB + authz role enrichment)
 
 	- Requires `X-XS-User-Id` + `X-XS-User-Email`
 	- Does **not** require `X-Workspace-Id`
 
-- `accounts.workspaces.listForUser` → payload `{}` → returns `{ workspaces: Array<{ id, name, slug, planType }> }` (DB)
+- `accounts.workspaces.listForUser` → payload `{}` → returns `{ workspaces: Array<{ id, name, slug, planType, role }> }` (DB + authz role enrichment)
 
 	- Requires `X-XS-User-Id`
 	- Does **not** require `X-Workspace-Id`
@@ -111,13 +111,13 @@ All behaviour is exposed via the internal “actions” endpoint.
 	- Generates a cryptographically-random invite token and stores only a one-way hash in DB
 	- The raw `token` is returned **once** to the caller (for sharing with the invitee)
 
-- `accounts.invites.resolve` → payload `{ token }` → returns `{ workspaceName, inviterName, roleKey, status, expiresAt }` (DB)
+- `accounts.invites.resolve` → payload `{ token }` → returns `{ id, workspaceId, workspaceSlug, workspaceName, inviterName, inviterEmail, inviteeEmail, role, roleKey, status, expiresAt, createdAt }` (DB)
 
 	- **Public** action: does **not** require `X-XS-User-Id` or `X-Workspace-Id`
 	- Looks up invites by hash(token); never stores raw tokens
 	- If an invite is `pending` but already expired, it is marked `expired` best-effort (without leaking DB errors)
 
-- `accounts.invites.accept` → payload `{ token }` → returns `{ accepted, workspaceId, roleKey, workspaceMemberCreated }` (DB)
+- `accounts.invites.accept` → payload `{ token }` → returns `{ accepted, workspaceId, roleKey, workspaceMemberCreated, workspace }` (DB)
 
 	- Requires `X-XS-User-Id` (auth required); does **not** require `X-Workspace-Id`
 	- Validates invite is `pending` and not expired/cancelled
