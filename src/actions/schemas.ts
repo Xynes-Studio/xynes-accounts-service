@@ -1,12 +1,19 @@
 import { z } from 'zod';
 
+const noControlChars = (value: string) => !/[\p{C}]/u.test(value);
+
 export const pingPayloadSchema = z.object({}).strict();
 
 export const readSelfUserPayloadSchema = z.object({}).strict();
 
 export const updateSelfUserPayloadSchema = z
   .object({
-    displayName: z.string().trim().min(1).max(200),
+    displayName: z
+      .string()
+      .trim()
+      .min(1)
+      .max(200)
+      .refine(noControlChars, 'displayName contains invalid control characters'),
   })
   .strict();
 

@@ -415,7 +415,20 @@ describe('Action handlers (unit, DI)', () => {
 
   it('updateSelf updates current user displayName and returns the user record', async () => {
     const sets: any[] = [];
+    const auditCalls: any[] = [];
     const dbClient: any = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: async () => [
+              {
+                id: ctx.userId,
+                displayName: 'Old Name',
+              },
+            ],
+          }),
+        }),
+      }),
       update: (table: any) => {
         expect(table).toBe(users);
         return {
@@ -438,7 +451,14 @@ describe('Action handlers (unit, DI)', () => {
       },
     };
 
-    const handler = createUpdateSelfHandler({ dbClient });
+    const handler = createUpdateSelfHandler({
+      dbClient,
+      auditLogger: {
+        info: (_msg: string, payload: unknown) => {
+          auditCalls.push(payload);
+        },
+      },
+    });
     const result = await handler({ displayName: '  Alice Doe  ' }, ctx as any);
 
     expect(sets[0]).toEqual({ displayName: 'Alice Doe' });
@@ -449,6 +469,57 @@ describe('Action handlers (unit, DI)', () => {
         displayName: 'Alice Doe',
       }),
     );
+    expect(auditCalls[0]).toEqual(
+      expect.objectContaining({
+        requestId: ctx.requestId,
+        userId: ctx.userId,
+        changedFields: ['displayName'],
+      }),
+    );
+  });
+
+  it('updateSelf accepts multilingual printable names', async () => {
+    const sets: any[] = [];
+    const dbClient: any = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: async () => [
+              {
+                id: ctx.userId,
+                displayName: 'Old Name',
+              },
+            ],
+          }),
+        }),
+      }),
+      update: () => ({
+        set: (row: any) => {
+          sets.push(row);
+          return {
+            where: () => ({
+              returning: async () => [
+                {
+                  id: ctx.userId,
+                  email: ctx.user.email,
+                  displayName: row.displayName,
+                  avatarUrl: ctx.user.avatarUrl,
+                },
+              ],
+            }),
+          };
+        },
+      }),
+    };
+
+    const handler = createUpdateSelfHandler({
+      dbClient,
+      auditLogger: { info: () => undefined },
+    });
+    const result = await handler({ displayName: '  José 李雷  ' }, ctx as any);
+
+    expect(sets[0]).toEqual({ displayName: 'José 李雷' });
+    expect(result.displayName).toBe('José 李雷');
   });
 
   it('updateSelf throws UNAUTHORIZED when ctx.userId is missing', async () => {
@@ -469,8 +540,23 @@ describe('Action handlers (unit, DI)', () => {
     });
   });
 
+  it('updateSelf throws VALIDATION_ERROR when displayName contains control characters', async () => {
+    const handler = createUpdateSelfHandler({ dbClient: {} as any });
+    await expect(handler({ displayName: 'Alice\nDoe' }, ctx as any)).rejects.toMatchObject({
+      code: 'VALIDATION_ERROR',
+      statusCode: 400,
+    });
+  });
+
   it('updateSelf throws NotFoundError when user row is not found', async () => {
     const dbClient: any = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: async () => [],
+          }),
+        }),
+      }),
       update: () => ({
         set: () => ({
           where: () => ({

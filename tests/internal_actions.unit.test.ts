@@ -342,6 +342,27 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
     expect(body.error.code).toBe('VALIDATION_ERROR');
   });
 
+  it('rejects accounts.user.updateSelf when displayName has control characters', async () => {
+    const req = new Request('http://localhost/internal/accounts-actions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Internal-Service-Token': INTERNAL_SERVICE_TOKEN,
+        'X-XS-User-Id': USER_ID,
+      },
+      body: JSON.stringify({
+        actionKey: 'accounts.user.updateSelf',
+        payload: { displayName: 'Alice\nDoe' },
+      }),
+    });
+
+    const res = await app.fetch(req);
+    expect(res.status).toBe(400);
+    const body: any = await res.json();
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+  });
+
   it('allows accounts.workspaces.listForUser without X-Workspace-Id (workspaceScoped=false)', async () => {
     const req = new Request('http://localhost/internal/accounts-actions', {
       method: 'POST',
