@@ -31,6 +31,9 @@ export function createUpdateSelfHandler({ dbClient = db }: UpdateSelfDependencie
     if (!displayName) {
       throw new DomainError('displayName is required', 'VALIDATION_ERROR', 400);
     }
+    if (displayName.length > 200) {
+      throw new DomainError('displayName must be at most 200 characters', 'VALIDATION_ERROR', 400);
+    }
 
     const rows = await dbClient
       .update(users)

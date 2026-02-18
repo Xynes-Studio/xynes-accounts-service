@@ -460,4 +460,29 @@ describe('Action handlers (unit, DI)', () => {
       statusCode: 401,
     });
   });
+
+  it('updateSelf throws VALIDATION_ERROR when displayName exceeds max length', async () => {
+    const handler = createUpdateSelfHandler({ dbClient: {} as any });
+    await expect(handler({ displayName: 'a'.repeat(201) }, ctx as any)).rejects.toMatchObject({
+      code: 'VALIDATION_ERROR',
+      statusCode: 400,
+    });
+  });
+
+  it('updateSelf throws NotFoundError when user row is not found', async () => {
+    const dbClient: any = {
+      update: () => ({
+        set: () => ({
+          where: () => ({
+            returning: async () => [],
+          }),
+        }),
+      }),
+    };
+
+    const handler = createUpdateSelfHandler({ dbClient });
+    await expect(handler({ displayName: 'Alice Doe' }, ctx as any)).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
+  });
 });
