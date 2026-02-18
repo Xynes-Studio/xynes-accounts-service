@@ -6,9 +6,10 @@ import { createEnsureWorkspaceMemberHandler } from '../src/actions/handlers/ensu
 import { createMeGetOrCreateHandler } from '../src/actions/handlers/meGetOrCreate';
 import { createListWorkspacesForUserHandler } from '../src/actions/handlers/workspaces/listForUser';
 import { createCreateWorkspaceHandler } from '../src/actions/handlers/workspaces/create';
+import { createUpdateSelfHandler } from '../src/actions/handlers/user/updateSelf';
 import { NotFoundError } from '../src/actions/errors';
 import { DomainError } from '@xynes/errors';
-import { workspaces, workspaceMembers } from '../src/infra/db/schema';
+import { users, workspaces, workspaceMembers } from '../src/infra/db/schema';
 
 const ctx = {
   workspaceId: '550e8400-e29b-41d4-a716-446655440000',
@@ -410,5 +411,53 @@ describe('Action handlers (unit, DI)', () => {
       expect(e).toBeInstanceOf(DomainError);
       expect(e.code).toBe('CONFLICT');
     }
+  });
+
+  it('updateSelf updates current user displayName and returns the user record', async () => {
+    const sets: any[] = [];
+    const dbClient: any = {
+      update: (table: any) => {
+        expect(table).toBe(users);
+        return {
+          set: (row: any) => {
+            sets.push(row);
+            return {
+              where: () => ({
+                returning: async () => [
+                  {
+                    id: ctx.userId,
+                    email: ctx.user.email,
+                    displayName: row.displayName,
+                    avatarUrl: ctx.user.avatarUrl,
+                  },
+                ],
+              }),
+            };
+          },
+        };
+      },
+    };
+
+    const handler = createUpdateSelfHandler({ dbClient });
+    const result = await handler({ displayName: '  Alice Doe  ' }, ctx as any);
+
+    expect(sets[0]).toEqual({ displayName: 'Alice Doe' });
+    expect(result).toEqual(
+      expect.objectContaining({
+        id: ctx.userId,
+        email: ctx.user.email,
+        displayName: 'Alice Doe',
+      }),
+    );
+  });
+
+  it('updateSelf throws UNAUTHORIZED when ctx.userId is missing', async () => {
+    const handler = createUpdateSelfHandler({ dbClient: {} as any });
+    await expect(
+      handler({ displayName: 'Alice Doe' }, { ...ctx, userId: null } as any),
+    ).rejects.toMatchObject({
+      code: 'UNAUTHORIZED',
+      statusCode: 401,
+    });
   });
 });

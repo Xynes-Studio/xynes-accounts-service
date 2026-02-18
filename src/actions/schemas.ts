@@ -4,6 +4,12 @@ export const pingPayloadSchema = z.object({}).strict();
 
 export const readSelfUserPayloadSchema = z.object({}).strict();
 
+export const updateSelfUserPayloadSchema = z
+  .object({
+    displayName: z.string().trim().min(1).max(200),
+  })
+  .strict();
+
 export const readCurrentWorkspacePayloadSchema = z.object({}).strict();
 
 export const meGetOrCreatePayloadSchema = z.object({}).strict();

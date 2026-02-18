@@ -81,6 +81,15 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
         },
       };
     });
+
+    registerAction('accounts.user.updateSelf', async (payload: any, ctx: any) => {
+      return {
+        id: ctx.userId,
+        email: ctx.user?.email ?? 'me@example.com',
+        displayName: payload.displayName,
+        avatarUrl: ctx.user?.avatarUrl ?? null,
+      };
+    });
   });
 
   it('returns 401 for missing X-Internal-Service-Token', async () => {
@@ -282,6 +291,55 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
         workspaces: [],
       }),
     );
+  });
+
+  it('allows accounts.user.updateSelf without X-Workspace-Id (workspaceScoped=false)', async () => {
+    const req = new Request('http://localhost/internal/accounts-actions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Internal-Service-Token': INTERNAL_SERVICE_TOKEN,
+        'X-XS-User-Id': USER_ID,
+        'X-XS-User-Email': 'me@example.com',
+      },
+      body: JSON.stringify({
+        actionKey: 'accounts.user.updateSelf',
+        payload: { displayName: 'Alice Doe' },
+      }),
+    });
+
+    const res = await app.fetch(req);
+    expect(res.status).toBe(200);
+    const body: any = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.data).toEqual(
+      expect.objectContaining({
+        id: USER_ID,
+        email: 'me@example.com',
+        displayName: 'Alice Doe',
+      }),
+    );
+  });
+
+  it('rejects accounts.user.updateSelf when payload has extra keys (z.strict)', async () => {
+    const req = new Request('http://localhost/internal/accounts-actions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Internal-Service-Token': INTERNAL_SERVICE_TOKEN,
+        'X-XS-User-Id': USER_ID,
+      },
+      body: JSON.stringify({
+        actionKey: 'accounts.user.updateSelf',
+        payload: { displayName: 'Alice Doe', extra: true },
+      }),
+    });
+
+    const res = await app.fetch(req);
+    expect(res.status).toBe(400);
+    const body: any = await res.json();
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('VALIDATION_ERROR');
   });
 
   it('allows accounts.workspaces.listForUser without X-Workspace-Id (workspaceScoped=false)', async () => {

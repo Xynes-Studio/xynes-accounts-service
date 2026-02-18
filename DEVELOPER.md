@@ -78,6 +78,12 @@ All behaviour is exposed via the internal “actions” endpoint.
 
 - `accounts.ping` → payload `{}` → returns `{ pong: true }`
 - `accounts.user.readSelf` → payload `{}` → returns `{ id, email, ... }` (DB)
+- `accounts.user.updateSelf` → payload `{ displayName }` → returns `{ id, email, displayName, avatarUrl }` (DB)
+
+	- Requires `X-XS-User-Id`
+	- Does **not** require `X-Workspace-Id`
+	- Payload is `z.strict()` (extra keys rejected)
+
 - `accounts.workspace.readCurrent` → payload `{}` → returns `{ id, name, ... }` (DB)
 - `accounts.workspaceMember.ensure` → payload `{ role?: "member" | "admin" }` → returns `{ created: boolean }` (DB)
 - `accounts.me.getOrCreate` → payload `{}` → returns `{ user, workspaces }` (DB + authz role enrichment)
