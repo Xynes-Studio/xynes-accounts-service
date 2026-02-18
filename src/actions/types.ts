@@ -1,6 +1,7 @@
 export type AccountsActionKey =
   | 'accounts.ping'
   | 'accounts.user.readSelf'
+  | 'accounts.user.updateSelf'
   | 'accounts.workspace.readCurrent'
   | 'accounts.workspaceMember.ensure'
   | 'accounts.me.getOrCreate'

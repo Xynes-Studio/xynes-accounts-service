@@ -6,9 +6,10 @@ import { createEnsureWorkspaceMemberHandler } from '../src/actions/handlers/ensu
 import { createMeGetOrCreateHandler } from '../src/actions/handlers/meGetOrCreate';
 import { createListWorkspacesForUserHandler } from '../src/actions/handlers/workspaces/listForUser';
 import { createCreateWorkspaceHandler } from '../src/actions/handlers/workspaces/create';
+import { createUpdateSelfHandler } from '../src/actions/handlers/user/updateSelf';
 import { NotFoundError } from '../src/actions/errors';
 import { DomainError } from '@xynes/errors';
-import { workspaces, workspaceMembers } from '../src/infra/db/schema';
+import { users, workspaces, workspaceMembers } from '../src/infra/db/schema';
 
 const ctx = {
   workspaceId: '550e8400-e29b-41d4-a716-446655440000',
@@ -410,5 +411,164 @@ describe('Action handlers (unit, DI)', () => {
       expect(e).toBeInstanceOf(DomainError);
       expect(e.code).toBe('CONFLICT');
     }
+  });
+
+  it('updateSelf updates current user displayName and returns the user record', async () => {
+    const sets: any[] = [];
+    const auditCalls: any[] = [];
+    const dbClient: any = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: async () => [
+              {
+                id: ctx.userId,
+                displayName: 'Old Name',
+              },
+            ],
+          }),
+        }),
+      }),
+      update: (table: any) => {
+        expect(table).toBe(users);
+        return {
+          set: (row: any) => {
+            sets.push(row);
+            return {
+              where: () => ({
+                returning: async () => [
+                  {
+                    id: ctx.userId,
+                    email: ctx.user.email,
+                    displayName: row.displayName,
+                    avatarUrl: ctx.user.avatarUrl,
+                  },
+                ],
+              }),
+            };
+          },
+        };
+      },
+    };
+
+    const handler = createUpdateSelfHandler({
+      dbClient,
+      auditLogger: {
+        info: (_msg: string, payload: unknown) => {
+          auditCalls.push(payload);
+        },
+      },
+    });
+    const result = await handler({ displayName: '  Alice Doe  ' }, ctx as any);
+
+    expect(sets[0]).toEqual({ displayName: 'Alice Doe' });
+    expect(result).toEqual(
+      expect.objectContaining({
+        id: ctx.userId,
+        email: ctx.user.email,
+        displayName: 'Alice Doe',
+      }),
+    );
+    expect(auditCalls[0]).toEqual(
+      expect.objectContaining({
+        requestId: ctx.requestId,
+        userId: ctx.userId,
+        changedFields: ['displayName'],
+      }),
+    );
+  });
+
+  it('updateSelf accepts multilingual printable names', async () => {
+    const sets: any[] = [];
+    const dbClient: any = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: async () => [
+              {
+                id: ctx.userId,
+                displayName: 'Old Name',
+              },
+            ],
+          }),
+        }),
+      }),
+      update: () => ({
+        set: (row: any) => {
+          sets.push(row);
+          return {
+            where: () => ({
+              returning: async () => [
+                {
+                  id: ctx.userId,
+                  email: ctx.user.email,
+                  displayName: row.displayName,
+                  avatarUrl: ctx.user.avatarUrl,
+                },
+              ],
+            }),
+          };
+        },
+      }),
+    };
+
+    const handler = createUpdateSelfHandler({
+      dbClient,
+      auditLogger: { info: () => undefined },
+    });
+    const result = await handler({ displayName: '  José 李雷  ' }, ctx as any);
+
+    expect(sets[0]).toEqual({ displayName: 'José 李雷' });
+    expect(result.displayName).toBe('José 李雷');
+  });
+
+  it('updateSelf throws UNAUTHORIZED when ctx.userId is missing', async () => {
+    const handler = createUpdateSelfHandler({ dbClient: {} as any });
+    await expect(
+      handler({ displayName: 'Alice Doe' }, { ...ctx, userId: null } as any),
+    ).rejects.toMatchObject({
+      code: 'UNAUTHORIZED',
+      statusCode: 401,
+    });
+  });
+
+  it('updateSelf throws VALIDATION_ERROR when displayName exceeds max length', async () => {
+    const handler = createUpdateSelfHandler({ dbClient: {} as any });
+    await expect(handler({ displayName: 'a'.repeat(201) }, ctx as any)).rejects.toMatchObject({
+      code: 'VALIDATION_ERROR',
+      statusCode: 400,
+    });
+  });
+
+  it('updateSelf throws VALIDATION_ERROR when displayName contains control characters', async () => {
+    const handler = createUpdateSelfHandler({ dbClient: {} as any });
+    await expect(handler({ displayName: 'Alice\nDoe' }, ctx as any)).rejects.toMatchObject({
+      code: 'VALIDATION_ERROR',
+      statusCode: 400,
+    });
+  });
+
+  it('updateSelf throws NotFoundError when user row is not found', async () => {
+    const dbClient: any = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: async () => [],
+          }),
+        }),
+      }),
+      update: () => ({
+        set: () => ({
+          where: () => ({
+            returning: async () => [],
+          }),
+        }),
+      }),
+    };
+
+    const handler = createUpdateSelfHandler({ dbClient });
+    await expect(handler({ displayName: 'Alice Doe' }, ctx as any)).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
   });
 });

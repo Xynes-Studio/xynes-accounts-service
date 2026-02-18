@@ -17,6 +17,7 @@ import {
   pingPayloadSchema,
   readCurrentWorkspacePayloadSchema,
   readSelfUserPayloadSchema,
+  updateSelfUserPayloadSchema,
   ensureWorkspaceMemberPayloadSchema,
   meGetOrCreatePayloadSchema,
   listWorkspacesForUserPayloadSchema,
@@ -41,6 +42,7 @@ const uuidHeader = z.string().uuid();
 
 const NON_WORKSPACE_ACTION_KEYS = new Set<AccountsActionKey>([
   'accounts.me.getOrCreate',
+  'accounts.user.updateSelf',
   'accounts.workspaces.listForUser',
   'accounts.workspaces.create',
   'accounts.invites.resolve',
@@ -131,6 +133,9 @@ internalRoute.post('/accounts-actions', async (c) => {
         break;
       case 'accounts.user.readSelf':
         validatedPayload = readSelfUserPayloadSchema.parse(rawPayload);
+        break;
+      case 'accounts.user.updateSelf':
+        validatedPayload = updateSelfUserPayloadSchema.parse(rawPayload);
         break;
       case 'accounts.workspace.readCurrent':
         validatedPayload = readCurrentWorkspacePayloadSchema.parse(rawPayload);
