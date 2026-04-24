@@ -46,3 +46,22 @@ export const workspaceInvites = platformSchema.table('workspace_invites', {
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
+
+// ── Workspace Admin Integration tables ──────────────────────────
+
+export const workspaceDomains = platformSchema.table('workspace_domains', {
+  id: uuid('id').primaryKey(),
+  workspaceId: uuid('workspace_id').notNull(),
+  hostname: text('hostname').notNull(),
+  status: text('status').notNull().default('pending'),
+  verificationMethod: text('verification_method').notNull().default('dns_txt'),
+  verificationName: text('verification_name').notNull(),
+  verificationValueHash: text('verification_value_hash').notNull(),
+  lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
+  verifiedAt: timestamp('verified_at', { withTimezone: true }),
+  createdBy: uuid('created_by').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  failureCode: text('failure_code'),
+  failureMessage: text('failure_message'),
+});

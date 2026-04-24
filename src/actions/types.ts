@@ -10,7 +10,11 @@ export type AccountsActionKey =
   | 'accounts.workspace_members.listForWorkspace'
   | 'accounts.invites.create'
   | 'accounts.invites.resolve'
-  | 'accounts.invites.accept';
+  | 'accounts.invites.accept'
+  | 'platform.domains.list'
+  | 'platform.domains.create'
+  | 'platform.domains.verify'
+  | 'platform.domains.delete';
 
 export type ActionContext = {
   workspaceId: string | null;

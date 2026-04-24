@@ -62,3 +62,25 @@ export const acceptWorkspaceInvitePayloadSchema = z
     token: z.string().trim().min(32).max(512),
   })
   .passthrough();
+
+// ── Platform Domain Action Schemas ──────────────────────────────
+
+export const platformDomainsListPayloadSchema = z.object({}).strict();
+
+export const platformDomainsCreatePayloadSchema = z
+  .object({
+    hostname: z.string().min(1).max(253),
+  })
+  .strict();
+
+export const platformDomainsVerifyPayloadSchema = z
+  .object({
+    domainId: z.string().uuid(),
+  })
+  .strict();
+
+export const platformDomainsDeletePayloadSchema = z
+  .object({
+    domainId: z.string().uuid(),
+  })
+  .strict();
