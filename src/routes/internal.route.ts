@@ -26,6 +26,10 @@ import {
   createWorkspaceInvitePayloadSchema,
   resolveWorkspaceInvitePayloadSchema,
   acceptWorkspaceInvitePayloadSchema,
+  platformDomainsListPayloadSchema,
+  platformDomainsCreatePayloadSchema,
+  platformDomainsVerifyPayloadSchema,
+  platformDomainsDeletePayloadSchema,
 } from '../actions/schemas';
 
 const internalRoute = new Hono();
@@ -164,6 +168,18 @@ internalRoute.post('/accounts-actions', async (c) => {
       case 'accounts.invites.accept':
         validatedPayload = acceptWorkspaceInvitePayloadSchema.parse(rawPayload);
         break;
+      case 'platform.domains.list':
+        validatedPayload = platformDomainsListPayloadSchema.parse(rawPayload);
+        break;
+      case 'platform.domains.create':
+        validatedPayload = platformDomainsCreatePayloadSchema.parse(rawPayload);
+        break;
+      case 'platform.domains.verify':
+        validatedPayload = platformDomainsVerifyPayloadSchema.parse(rawPayload);
+        break;
+      case 'platform.domains.delete':
+        validatedPayload = platformDomainsDeletePayloadSchema.parse(rawPayload);
+        break;
       default:
         throw new UnknownActionError(actionKey);
     }
@@ -173,7 +189,8 @@ internalRoute.post('/accounts-actions', async (c) => {
       key === 'accounts.workspaceMember.ensure' ||
       key === 'accounts.workspaces.create' ||
       key === 'accounts.invites.create' ||
-      key === 'accounts.invites.accept'
+      key === 'accounts.invites.accept' ||
+      key === 'platform.domains.create'
         ? 201
         : 200;
     return c.json(createSuccessResponse(actionResult, requestId), status);
