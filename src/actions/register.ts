@@ -11,6 +11,12 @@ import { createWorkspaceHandler } from './handlers/workspaces/create';
 import { createWorkspaceInviteHandler } from './handlers/invites/create';
 import { resolveWorkspaceInviteHandler } from './handlers/invites/resolve';
 import { acceptWorkspaceInviteHandler } from './handlers/invites/accept';
+import {
+  listDomainsHandler,
+  createDomainHandler,
+  verifyDomainHandler,
+  deleteDomainHandler,
+} from './handlers/integrations/domains';
 
 export function registerAccountsActions() {
   registerAction('accounts.ping', pingHandler);
@@ -25,4 +31,10 @@ export function registerAccountsActions() {
   registerAction('accounts.invites.create', createWorkspaceInviteHandler);
   registerAction('accounts.invites.resolve', resolveWorkspaceInviteHandler);
   registerAction('accounts.invites.accept', acceptWorkspaceInviteHandler);
+
+  // ── Platform Domain Actions ───────────────────────────────────
+  registerAction('platform.domains.list', listDomainsHandler);
+  registerAction('platform.domains.create', createDomainHandler);
+  registerAction('platform.domains.verify', verifyDomainHandler);
+  registerAction('platform.domains.delete', deleteDomainHandler);
 }

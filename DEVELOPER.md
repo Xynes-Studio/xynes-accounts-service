@@ -67,6 +67,7 @@ Reference ADR: `xynes-cms-core/docs/adr/001-testing-strategy.md`.
   - `src/actions/handlers/integrations/`: workspace admin integration utilities
     - `domainValidation.ts`: hostname normalization and validation for workspace verified domains
     - `apiKeyCrypto.ts`: API key generation, hashing (Argon2id), and verification
+    - `domains.ts`: workspace domain CRUD action handlers (list, create, verify, soft-delete)
 - `src/infra/`: config, logger, DB client, request parsing helpers
 - `tests/`: unit and integration tests
 
@@ -133,6 +134,34 @@ All behaviour is exposed via the internal “actions” endpoint.
 	- Enforces invite email matches the authenticated user email from `identity.users`
 	- Ensures membership exists and assigns the invite's `roleKey` via authz internal action `authz.assignRole`
 	- On authz failure, performs best-effort rollback (revert invite status and remove newly-created membership)
+
+- `platform.domains.list` → payload `{}` → returns `{ domains: Array<DomainDto> }` (DB)
+
+	- Requires `X-XS-User-Id` and `X-Workspace-Id`
+	- RBAC enforced via authz `POST /authz/check` for `platform.domains.list`
+	- Returns workspace domains; response never contains `verificationValueHash`
+
+- `platform.domains.create` → payload `{ hostname }` → returns `DomainDto & { verificationValue }` (DB)
+
+	- Requires `X-XS-User-Id` and `X-Workspace-Id`
+	- RBAC enforced via authz for `platform.domains.create`
+	- Hostname is normalised and validated via `normalizeWorkspaceDomain`
+	- Verification value shown **once** in response; only the SHA-256 hash is stored in DB
+	- Returns CONFLICT (409) for duplicate active hostnames
+
+- `platform.domains.verify` → payload `{ domainId }` → returns `DomainDto` (DB + DNS)
+
+	- Requires `X-XS-User-Id` and `X-Workspace-Id`
+	- RBAC enforced via authz for `platform.domains.verify`
+	- Performs DNS TXT record lookup against the stored verification name
+	- Updates `lastCheckedAt`, `status`, `verifiedAt`/`failureCode` based on DNS result
+
+- `platform.domains.delete` → payload `{ domainId }` → returns `DomainDto` (DB)
+
+	- Requires `X-XS-User-Id` and `X-Workspace-Id`
+	- RBAC enforced via authz for `platform.domains.delete`
+	- **Soft-delete only**: sets `status = 'disabled'` to preserve audit history
+	- Does NOT physically remove the row from `platform.workspace_domains`
 
 ### Adding a new action (TDD workflow)
 
