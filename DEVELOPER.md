@@ -64,6 +64,9 @@ Reference ADR: `xynes-cms-core/docs/adr/001-testing-strategy.md`.
   - `src/actions/register.ts`: action registration
   - `src/actions/schemas.ts`: strict Zod payload schemas
   - `src/actions/handlers/*`: action implementations
+  - `src/actions/handlers/integrations/`: workspace admin integration utilities
+    - `domainValidation.ts`: hostname normalization and validation for workspace verified domains
+    - `apiKeyCrypto.ts`: API key generation, hashing (Argon2id), and verification
 - `src/infra/`: config, logger, DB client, request parsing helpers
 - `tests/`: unit and integration tests
 
@@ -155,6 +158,108 @@ Follow ADR-001 order (schema tests → unit logic tests → integration flow tes
 - Tokens are **bearer secrets**. Treat them like passwords.
 - The database stores only a **SHA-256 hash** of the token (never the raw token).
 - Public resolve does not echo tokens in error messages.
+
+### Workspace API keys
+
+- API keys are **bearer secrets**. Raw keys are shown **once** at creation time, then discarded.
+- The database stores only an **Argon2id hash** (`key_hash`) and a short **prefix** (`key_prefix`) for indexed lookup.
+- `key_prefix` is the first 8 hex chars of the secret portion — safe for display but not enough to reconstruct the key.
+- The raw key format is `xynes_live_<64-hex-chars>` (32 bytes CSPRNG entropy).
+- Never log raw API keys. The handler layer must scrub raw keys from response metadata/logs.
+
+## Integration Utilities
+
+Shared utilities for the workspace admin integrations epic live in `src/actions/handlers/integrations/`.
+
+These are **pure utility modules** — no DB, no HTTP, no side-effects. Downstream action handlers (Tasks 5-6 in the implementation plan) compose them.
+
+### Domain Validation (`domainValidation.ts`)
+
+Normalises and validates raw hostname input for workspace verified domains.
+
+**Exports:**
+
+```ts
+type NormalizedDomain = {
+  hostname: string;         // Lower-cased, trimmed (e.g. "example.com")
+  verificationName: string; // DNS TXT record name (e.g. "_xynes.example.com")
+};
+
+function normalizeWorkspaceDomain(input: string): NormalizedDomain;
+```
+
+**Validation rules (in execution order):**
+
+| # | Rule | Example rejected |
+|---|------|------------------|
+| 1 | Trim + lowercase | `"  Example.COM  "` → `"example.com"` |
+| 2 | Empty string | `""`, `"   "` |
+| 3 | IPv4 / IPv6 literals | `"192.168.1.1"`, `"::1"`, `"[::1]"` |
+| 4 | Forbidden chars: `://`, `/`, `?`, `#`, `:`, `*` | `"https://x.com"`, `"x.com/blog"`, `"x.com:8080"` |
+| 5 | Reserved hostnames | `"localhost"` |
+| 6 | Must contain at least one dot | `"intranet"` |
+| 7 | No leading/trailing dots | `".example.com"`, `"example.com."` |
+| 8 | RFC 1035: ≤ 253 total, ≤ 63 per label | `"aaa...aaa.com"` (> 253) |
+
+Throws `DomainError` with code `INVALID_DOMAIN` (HTTP 400) on any violation.
+
+**Usage example:**
+
+```ts
+import { normalizeWorkspaceDomain } from './integrations/domainValidation';
+
+const { hostname, verificationName } = normalizeWorkspaceDomain('Example.com');
+// hostname = "example.com"
+// verificationName = "_xynes.example.com"
+```
+
+### API Key Crypto (`apiKeyCrypto.ts`)
+
+Generates, hashes, and verifies workspace API keys using cryptographically secure primitives.
+
+**Exports:**
+
+```ts
+type GeneratedWorkspaceApiKey = {
+  rawKey: string;    // "xynes_live_<64-hex>" — show once, never store
+  keyPrefix: string; // First 8 hex chars of secret — safe for DB index/display
+  keyHash: string;   // Argon2id hash — safe to store in DB
+};
+
+async function generateWorkspaceApiKey(): Promise<GeneratedWorkspaceApiKey>;
+async function hashWorkspaceApiKey(rawKey: string): Promise<string>;
+async function verifyWorkspaceApiKey(rawKey: string, keyHash: string): Promise<boolean>;
+```
+
+**Security properties:**
+
+| Property | Implementation |
+|----------|----------------|
+| Randomness | `crypto.randomBytes` (CSPRNG), 32 bytes |
+| Hash algorithm | Argon2id (via `Bun.password`) |
+| Memory cost | 19,456 KiB (~19 MiB) — OWASP minimum |
+| Time cost | 2 iterations |
+| Salt | Auto-generated per hash (unique each call) |
+| Prefix safety | 8 hex chars (4 bytes) — insufficient to reconstruct 32-byte key |
+| Error handling | `verifyWorkspaceApiKey` returns `false` (never throws) on malformed inputs |
+
+**Usage example:**
+
+```ts
+import {
+  generateWorkspaceApiKey,
+  verifyWorkspaceApiKey,
+} from './integrations/apiKeyCrypto';
+
+// At creation time (show rawKey to user once)
+const { rawKey, keyPrefix, keyHash } = await generateWorkspaceApiKey();
+// Store keyPrefix + keyHash in DB; return rawKey in create response only
+
+// At verification time (e.g. API gateway)
+const isValid = await verifyWorkspaceApiKey(incomingRawKey, storedHash);
+```
+
+**Test coverage:** Both modules are at **100% function and line coverage**.
 
 ## Environment
 
