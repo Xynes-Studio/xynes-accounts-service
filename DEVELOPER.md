@@ -64,6 +64,9 @@ Reference ADR: `xynes-cms-core/docs/adr/001-testing-strategy.md`.
   - `src/actions/register.ts`: action registration
   - `src/actions/schemas.ts`: strict Zod payload schemas
   - `src/actions/handlers/*`: action implementations
+  - `src/actions/handlers/integrations/`: workspace admin integration utilities
+    - `domainValidation.ts`: hostname normalization and validation for workspace verified domains
+    - `apiKeyCrypto.ts`: API key generation, hashing (Argon2id), and verification
 - `src/infra/`: config, logger, DB client, request parsing helpers
 - `tests/`: unit and integration tests
 
