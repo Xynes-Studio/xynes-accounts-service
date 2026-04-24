@@ -105,6 +105,12 @@ describe('verifyWorkspaceApiKey', () => {
     expect(verified).toBe(false);
   });
 
+  it('fails for a completely invalid hash format', async () => {
+    const key = await generateWorkspaceApiKey();
+    const verified = await verifyWorkspaceApiKey(key.rawKey, 'not-a-valid-hash-at-all');
+    expect(verified).toBe(false);
+  });
+
   it('fails for an empty raw key', async () => {
     const key = await generateWorkspaceApiKey();
     const verified = await verifyWorkspaceApiKey('', key.keyHash);

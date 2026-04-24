@@ -44,9 +44,10 @@ const IPV6_RE = /^\[?([0-9a-f:]+(?:::\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})?)\]?$/i
  * Rules enforced:
  *  1. Trim and lower-case.
  *  2. Reject empty / whitespace-only strings.
- *  3. Reject strings containing `://`, `/`, `?`, `#`, `:`, or `*`.
- *  4. Reject reserved names (`localhost`).
- *  5. Reject IPv4 / IPv6 literals.
+ *  3. Reject IPv4 / IPv6 literals (before forbidden-char check
+ *     so IP inputs get a specific error message).
+ *  4. Reject strings containing `://`, `/`, `?`, `#`, `:`, or `*`.
+ *  5. Reject reserved names (`localhost`).
  *  6. Require at least one dot (TLD must be present).
  *  7. Reject leading / trailing dots.
  *  8. Enforce RFC 1035 length limits (253 total, 63 per label).
@@ -61,23 +62,8 @@ export function normalizeWorkspaceDomain(input: string): NormalizedDomain {
     throw new DomainError('Hostname must not be empty', 'INVALID_DOMAIN', 400);
   }
 
-  // ── 2. Forbidden characters ───────────────────────────────────
-  for (const ch of FORBIDDEN_CHARS) {
-    if (trimmed.includes(ch)) {
-      throw new DomainError(`Hostname must not contain "${ch}"`, 'INVALID_DOMAIN', 400);
-    }
-  }
-
-  // ── 3. Reserved hostnames ─────────────────────────────────────
-  if (RESERVED_HOSTNAMES.has(trimmed)) {
-    throw new DomainError(
-      `"${trimmed}" is a reserved hostname and cannot be used`,
-      'INVALID_DOMAIN',
-      400,
-    );
-  }
-
-  // ── 4. IP literal rejection ───────────────────────────────────
+  // ── 2. IP literal rejection (before forbidden-char check so IPv6 ───
+  //        addresses with colons get a specific error message)
   if (IPV4_RE.test(trimmed)) {
     throw new DomainError(
       'IP addresses are not allowed; provide a hostname instead',
@@ -89,6 +75,22 @@ export function normalizeWorkspaceDomain(input: string): NormalizedDomain {
   if (IPV6_RE.test(trimmed)) {
     throw new DomainError(
       'IPv6 addresses are not allowed; provide a hostname instead',
+      'INVALID_DOMAIN',
+      400,
+    );
+  }
+
+  // ── 3. Forbidden characters ───────────────────────────────────
+  for (const ch of FORBIDDEN_CHARS) {
+    if (trimmed.includes(ch)) {
+      throw new DomainError(`Hostname must not contain "${ch}"`, 'INVALID_DOMAIN', 400);
+    }
+  }
+
+  // ── 4. Reserved hostnames ─────────────────────────────────────
+  if (RESERVED_HOSTNAMES.has(trimmed)) {
+    throw new DomainError(
+      `"${trimmed}" is a reserved hostname and cannot be used`,
       'INVALID_DOMAIN',
       400,
     );
