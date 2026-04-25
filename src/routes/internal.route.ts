@@ -30,6 +30,10 @@ import {
   platformDomainsCreatePayloadSchema,
   platformDomainsVerifyPayloadSchema,
   platformDomainsDeletePayloadSchema,
+  platformApiKeysListPayloadSchema,
+  platformApiKeysCreatePayloadSchema,
+  platformApiKeysRevokePayloadSchema,
+  platformApiKeysUsageReadPayloadSchema,
 } from '../actions/schemas';
 
 const internalRoute = new Hono();
@@ -180,6 +184,18 @@ internalRoute.post('/accounts-actions', async (c) => {
       case 'platform.domains.delete':
         validatedPayload = platformDomainsDeletePayloadSchema.parse(rawPayload);
         break;
+      case 'platform.api_keys.list':
+        validatedPayload = platformApiKeysListPayloadSchema.parse(rawPayload);
+        break;
+      case 'platform.api_keys.create':
+        validatedPayload = platformApiKeysCreatePayloadSchema.parse(rawPayload);
+        break;
+      case 'platform.api_keys.revoke':
+        validatedPayload = platformApiKeysRevokePayloadSchema.parse(rawPayload);
+        break;
+      case 'platform.api_keys.usage.read':
+        validatedPayload = platformApiKeysUsageReadPayloadSchema.parse(rawPayload);
+        break;
       default:
         throw new UnknownActionError(actionKey);
     }
@@ -190,7 +206,8 @@ internalRoute.post('/accounts-actions', async (c) => {
       key === 'accounts.workspaces.create' ||
       key === 'accounts.invites.create' ||
       key === 'accounts.invites.accept' ||
-      key === 'platform.domains.create'
+      key === 'platform.domains.create' ||
+      key === 'platform.api_keys.create'
         ? 201
         : 200;
     return c.json(createSuccessResponse(actionResult, requestId), status);

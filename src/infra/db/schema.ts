@@ -65,3 +65,31 @@ export const workspaceDomains = platformSchema.table('workspace_domains', {
   failureCode: text('failure_code'),
   failureMessage: text('failure_message'),
 });
+
+export const workspaceApiKeys = platformSchema.table('workspace_api_keys', {
+  id: uuid('id').primaryKey(),
+  workspaceId: uuid('workspace_id').notNull(),
+  name: text('name').notNull(),
+  keyPrefix: text('key_prefix').notNull(),
+  keyHash: text('key_hash').notNull(),
+  status: text('status').notNull().default('active'),
+  presetKey: text('preset_key'),
+  createdBy: uuid('created_by').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  revokedBy: uuid('revoked_by'),
+  lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+});
+
+export const workspaceApiKeyScopes = platformSchema.table(
+  'workspace_api_key_scopes',
+  {
+    apiKeyId: uuid('api_key_id').notNull(),
+    actionKey: text('action_key').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.apiKeyId, t.actionKey] }),
+  }),
+);

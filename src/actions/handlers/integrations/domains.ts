@@ -5,9 +5,15 @@ import { DomainError } from '@xynes/errors';
 import { db } from '../../../infra/db';
 import { logger } from '../../../infra/logger';
 import { workspaceDomains } from '../../../infra/db/schema';
-import { createAuthzClient, type AuthzClient } from '../../../infra/authz/authzClient';
+import type { AuthzClient } from '../../../infra/authz/authzClient';
 import { normalizeWorkspaceDomain } from './domainValidation';
 import type { ActionContext } from '../../types';
+import {
+  requireUserId,
+  requireWorkspaceId,
+  requirePermission,
+  resolveAuthzClient,
+} from '../../guards';
 
 // ── Public types ────────────────────────────────────────────────
 
@@ -50,35 +56,6 @@ export type DomainHandlerDependencies = {
 };
 
 // ── Helpers ─────────────────────────────────────────────────────
-
-function requireUserId(ctx: ActionContext): string {
-  if (!ctx.userId) {
-    throw new DomainError('Missing userId in auth context', 'UNAUTHORIZED', 401);
-  }
-  return ctx.userId;
-}
-
-function requireWorkspaceId(ctx: ActionContext): string {
-  if (!ctx.workspaceId) {
-    throw new DomainError('Missing workspaceId in action context', 'MISSING_CONTEXT', 400);
-  }
-  return ctx.workspaceId;
-}
-
-async function requirePermission(
-  authzClient: AuthzClient,
-  ctx: ActionContext,
-  actionKey: string,
-): Promise<void> {
-  const allowed = await authzClient.checkPermission({
-    userId: ctx.userId!,
-    workspaceId: ctx.workspaceId,
-    actionKey,
-  });
-  if (!allowed) {
-    throw new DomainError('You do not have permission to perform this action', 'FORBIDDEN', 403);
-  }
-}
 
 /** Map a DB row to a safe DTO (strips verification_value_hash). */
 function toDto(row: typeof workspaceDomains.$inferSelect): DomainDto {
@@ -160,7 +137,7 @@ export function createListDomainsHandler({
   return async (_payload: ListDomainsPayload, ctx: ActionContext): Promise<ListDomainsResult> => {
     requireUserId(ctx);
     const workspaceId = requireWorkspaceId(ctx);
-    const resolvedAuthz = authzClient ?? createAuthzClient();
+    const resolvedAuthz = resolveAuthzClient(authzClient);
 
     await requirePermission(resolvedAuthz, ctx, 'platform.domains.list');
 
@@ -191,7 +168,7 @@ export function createCreateDomainHandler({
   ): Promise<CreateDomainResultDto> => {
     const userId = requireUserId(ctx);
     const workspaceId = requireWorkspaceId(ctx);
-    const resolvedAuthz = authzClient ?? createAuthzClient();
+    const resolvedAuthz = resolveAuthzClient(authzClient);
 
     await requirePermission(resolvedAuthz, ctx, 'platform.domains.create');
 
@@ -256,7 +233,7 @@ export function createVerifyDomainHandler({
   return async (payload: VerifyDomainPayload, ctx: ActionContext): Promise<DomainDto> => {
     requireUserId(ctx);
     const workspaceId = requireWorkspaceId(ctx);
-    const resolvedAuthz = authzClient ?? createAuthzClient();
+    const resolvedAuthz = resolveAuthzClient(authzClient);
 
     await requirePermission(resolvedAuthz, ctx, 'platform.domains.verify');
 
@@ -367,7 +344,7 @@ export function createDeleteDomainHandler({
   return async (payload: DeleteDomainPayload, ctx: ActionContext): Promise<DomainDto> => {
     requireUserId(ctx);
     const workspaceId = requireWorkspaceId(ctx);
-    const resolvedAuthz = authzClient ?? createAuthzClient();
+    const resolvedAuthz = resolveAuthzClient(authzClient);
 
     await requirePermission(resolvedAuthz, ctx, 'platform.domains.delete');
 
