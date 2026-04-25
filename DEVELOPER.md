@@ -63,11 +63,13 @@ Reference ADR: `xynes-cms-core/docs/adr/001-testing-strategy.md`.
 
   - `src/actions/register.ts`: action registration
   - `src/actions/schemas.ts`: strict Zod payload schemas
+  - `src/actions/guards.ts`: shared context-validation and RBAC guard helpers (`requireUserId`, `requireWorkspaceId`, `requirePermission`)
   - `src/actions/handlers/*`: action implementations
-  - `src/actions/handlers/integrations/`: workspace admin integration utilities
+  - `src/actions/handlers/integrations/`: workspace admin integration utilities and handlers
     - `domainValidation.ts`: hostname normalization and validation for workspace verified domains
     - `apiKeyCrypto.ts`: API key generation, hashing (Argon2id), and verification
     - `domains.ts`: workspace domain CRUD action handlers (list, create, verify, soft-delete)
+    - `apiKeys.ts`: workspace API key lifecycle handlers (list, create, revoke, usage.read) + preset-to-scope mapping
 - `src/infra/`: config, logger, DB client, request parsing helpers
 - `tests/`: unit and integration tests
 
@@ -162,6 +164,36 @@ All behaviour is exposed via the internal “actions” endpoint.
 	- RBAC enforced via authz for `platform.domains.delete`
 	- **Soft-delete only**: sets `status = 'disabled'` to preserve audit history
 	- Does NOT physically remove the row from `platform.workspace_domains`
+
+- `platform.api_keys.list` → payload `{}` → returns `{ apiKeys: Array<ApiKeyDto> }` (DB)
+
+	- Requires `X-XS-User-Id` and `X-Workspace-Id`
+	- RBAC enforced via authz `POST /authz/check` for `platform.api_keys.list`
+	- Returns workspace API keys; response never contains `keyHash` or the raw key
+
+- `platform.api_keys.create` → payload `{ name, presetKey, expiresAt? }` → returns `ApiKeyDto & { rawKey, scopes }` (DB)
+
+	- Requires `X-XS-User-Id` and `X-Workspace-Id`
+	- RBAC enforced via authz for `platform.api_keys.create`
+	- `presetKey` maps to a curated set of action-key scopes (see `WORKSPACE_API_KEY_PRESETS`)
+	- Raw key shown **once** in response; only Argon2id hash + 8-char prefix stored in DB
+	- Returns INVALID_PRESET (400) for unknown preset keys
+	- Returns HTTP 201 on success
+
+- `platform.api_keys.revoke` → payload `{ keyId }` → returns `ApiKeyDto` (DB)
+
+	- Requires `X-XS-User-Id` and `X-Workspace-Id`
+	- RBAC enforced via authz for `platform.api_keys.revoke`
+	- Sets `status = 'revoked'`, records `revokedBy` (userId) and `revokedAt`
+	- Returns ALREADY_REVOKED (409) if key is already revoked
+	- Does NOT physically delete the row from `platform.workspace_api_keys`
+
+- `platform.api_keys.usage.read` → payload `{ keyId }` → returns `{ keyId, name, status, lastUsedAt, createdAt, scopes }` (DB)
+
+	- Requires `X-XS-User-Id` and `X-Workspace-Id`
+	- RBAC enforced via authz for `platform.api_keys.usage.read`
+	- Returns key metadata + last usage timestamp + associated scopes
+	- Response never contains `keyHash` or raw key
 
 ### Adding a new action (TDD workflow)
 
@@ -289,6 +321,48 @@ const isValid = await verifyWorkspaceApiKey(incomingRawKey, storedHash);
 ```
 
 **Test coverage:** Both modules are at **100% function and line coverage**.
+
+### API Key Action Handlers (`apiKeys.ts`)
+
+Workspace API key lifecycle handlers (CRUD + usage read) with built-in RBAC and preset-to-scope mapping.
+
+**Handler factories (DI-friendly):**
+
+| Factory | Action Key | Description |
+|---------|-----------|-------------|
+| `createListApiKeysHandler` | `platform.api_keys.list` | Lists all API keys for the workspace (never leaks `keyHash`) |
+| `createCreateApiKeyHandler` | `platform.api_keys.create` | Creates a key, maps preset to scopes, returns raw key once |
+| `createRevokeApiKeyHandler` | `platform.api_keys.revoke` | Soft-revokes a key (records `revokedBy`/`revokedAt`) |
+| `createReadApiKeyUsageHandler` | `platform.api_keys.usage.read` | Returns key metadata + `lastUsedAt` + associated scopes |
+
+**Preset → scope mapping (`WORKSPACE_API_KEY_PRESETS`):**
+
+| Preset Key | Scopes |
+|-----------|--------|
+| `cms_readonly` | `cms.content.listPublished`, `cms.content.getPublishedBySlug`, `cms.blog_entry.listPublished`, `cms.blog_entry.getPublishedBySlug` |
+| `cms_authoring` | `cms.entry.create`, `cms.entry.update`, `cms.entry.getById`, `cms.entry.listByDirectory` |
+| `cms_publisher` | All `cms_authoring` scopes + `cms.entry.publish`, `cms.entry.status.set` |
+| `telemetry_read` | `telemetry.events.listRecentForWorkspace`, `telemetry.stats.summaryByRoute` |
+| `workspace_admin` | `platform.domains.list`, `platform.api_keys.list`, `platform.api_keys.usage.read` |
+
+> **Security:** `workspace_admin` intentionally excludes `platform.api_keys.create` and `platform.api_keys.revoke` to prevent privilege escalation via API key self-management.
+
+**Test coverage:** `apiKeys.ts` — 100% functions, 99.51% lines (37 unit tests).
+
+### Shared Action Guards (`guards.ts`)
+
+Reusable context-validation and RBAC helpers extracted to eliminate duplication across handler files.
+
+**Exports:**
+
+```ts
+function requireUserId(ctx: ActionContext): string;
+function requireWorkspaceId(ctx: ActionContext): string;
+async function requirePermission(authzClient: AuthzClient, ctx: ActionContext, actionKey: string): Promise<void>;
+function resolveAuthzClient(injected?: AuthzClient): AuthzClient;
+```
+
+**Test coverage:** 100% functions, 100% lines.
 
 ## Environment
 

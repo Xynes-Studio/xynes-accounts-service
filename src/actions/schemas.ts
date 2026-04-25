@@ -84,3 +84,38 @@ export const platformDomainsDeletePayloadSchema = z
     domainId: z.string().uuid(),
   })
   .strict();
+
+// ── Platform API Key Action Schemas ─────────────────────────────
+
+export const platformApiKeysListPayloadSchema = z.object({}).strict();
+
+export const platformApiKeysCreatePayloadSchema = z
+  .object({
+    name: z
+      .string()
+      .trim()
+      .min(1)
+      .max(120)
+      .refine(noControlChars, 'name contains invalid control characters'),
+    presetKey: z.enum([
+      'cms_readonly',
+      'cms_authoring',
+      'cms_publisher',
+      'telemetry_read',
+      'workspace_admin',
+    ]),
+    expiresAt: z.string().datetime().optional(),
+  })
+  .strict();
+
+export const platformApiKeysRevokePayloadSchema = z
+  .object({
+    keyId: z.string().uuid(),
+  })
+  .strict();
+
+export const platformApiKeysUsageReadPayloadSchema = z
+  .object({
+    keyId: z.string().uuid(),
+  })
+  .strict();

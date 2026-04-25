@@ -14,7 +14,11 @@ export type AccountsActionKey =
   | 'platform.domains.list'
   | 'platform.domains.create'
   | 'platform.domains.verify'
-  | 'platform.domains.delete';
+  | 'platform.domains.delete'
+  | 'platform.api_keys.list'
+  | 'platform.api_keys.create'
+  | 'platform.api_keys.revoke'
+  | 'platform.api_keys.usage.read';
 
 export type ActionContext = {
   workspaceId: string | null;

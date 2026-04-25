@@ -17,6 +17,12 @@ import {
   verifyDomainHandler,
   deleteDomainHandler,
 } from './handlers/integrations/domains';
+import {
+  listApiKeysHandler,
+  createApiKeyHandler,
+  revokeApiKeyHandler,
+  readApiKeyUsageHandler,
+} from './handlers/integrations/apiKeys';
 
 export function registerAccountsActions() {
   registerAction('accounts.ping', pingHandler);
@@ -37,4 +43,10 @@ export function registerAccountsActions() {
   registerAction('platform.domains.create', createDomainHandler);
   registerAction('platform.domains.verify', verifyDomainHandler);
   registerAction('platform.domains.delete', deleteDomainHandler);
+
+  // ── Platform API Key Actions ──────────────────────────────────
+  registerAction('platform.api_keys.list', listApiKeysHandler);
+  registerAction('platform.api_keys.create', createApiKeyHandler);
+  registerAction('platform.api_keys.revoke', revokeApiKeyHandler);
+  registerAction('platform.api_keys.usage.read', readApiKeyUsageHandler);
 }
