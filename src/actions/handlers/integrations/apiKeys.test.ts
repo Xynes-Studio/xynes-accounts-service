@@ -98,7 +98,6 @@ function makeFakeDb({
   function getTableName(table: unknown): string {
     if (!table) return '';
     const t = table as any;
-    // Drizzle uses Symbol.for("drizzle:Name") or t._.name
     const symName = t[Symbol.for('drizzle:Name')];
     if (typeof symName === 'string') return symName;
     if (t?._ && typeof t._.name === 'string') return t._.name;
@@ -110,7 +109,7 @@ function makeFakeDb({
     return getTableName(table) === 'workspace_api_key_scopes';
   }
 
-  return {
+  const fakeDb: Record<string, any> = {
     select: () => ({
       from: (table: unknown) => {
         const isScope = isScopeTable(table);
@@ -176,9 +175,15 @@ function makeFakeDb({
         };
       },
     }),
+    // Drizzle transaction: execute the callback with this same fake client as tx
+    transaction: async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => {
+      return fn(fakeDb);
+    },
     _getInserted: () => insertedValues,
     _getUpdated: () => updatedValues,
   };
+
+  return fakeDb;
 }
 
 // ── Fake API key generator ─────────────────────────────────────

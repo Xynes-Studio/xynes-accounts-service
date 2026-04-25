@@ -34,6 +34,10 @@ export function requireWorkspaceId(ctx: ActionContext): string {
  * Check the given action key against the authz service for the current
  * user + workspace context.
  *
+ * Self-validating: calls requireUserId internally so callers don't need
+ * to guarantee userId is non-null before invoking this guard.
+ *
+ * @throws DomainError with code UNAUTHORIZED (401) when userId is missing.
  * @throws DomainError with code FORBIDDEN (403) when permission is denied.
  */
 export async function requirePermission(
@@ -41,8 +45,9 @@ export async function requirePermission(
   ctx: ActionContext,
   actionKey: string,
 ): Promise<void> {
+  const userId = requireUserId(ctx);
   const allowed = await authzClient.checkPermission({
-    userId: ctx.userId!,
+    userId,
     workspaceId: ctx.workspaceId,
     actionKey,
   });

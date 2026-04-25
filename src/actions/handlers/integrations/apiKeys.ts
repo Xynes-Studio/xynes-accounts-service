@@ -204,29 +204,35 @@ export function createCreateApiKeyHandler({
 
     const apiKeyId = idFactory();
 
-    const [inserted] = await dbClient
-      .insert(workspaceApiKeys)
-      .values({
-        id: apiKeyId,
-        workspaceId,
-        name: payload.name.trim(),
-        keyPrefix,
-        keyHash,
-        status: 'active',
-        presetKey: payload.presetKey,
-        createdBy: userId,
-        expiresAt: payload.expiresAt ? new Date(payload.expiresAt) : null,
-      })
-      .returning();
+    // Wrap key + scope inserts in a single transaction so a partial failure
+    // never leaves an active key without scopes (undefined security state).
+    const inserted = await dbClient.transaction(async (tx) => {
+      const [row] = await tx
+        .insert(workspaceApiKeys)
+        .values({
+          id: apiKeyId,
+          workspaceId,
+          name: payload.name.trim(),
+          keyPrefix,
+          keyHash,
+          status: 'active',
+          presetKey: payload.presetKey,
+          createdBy: userId,
+          expiresAt: payload.expiresAt ? new Date(payload.expiresAt) : null,
+        })
+        .returning();
 
-    // Insert scope rows
-    if (scopes.length > 0) {
-      const scopeRows = scopes.map((actionKey) => ({
-        apiKeyId,
-        actionKey,
-      }));
-      await dbClient.insert(workspaceApiKeyScopes).values(scopeRows);
-    }
+      // Insert scope rows within the same transaction
+      if (scopes.length > 0) {
+        const scopeRows = scopes.map((actionKey) => ({
+          apiKeyId,
+          actionKey,
+        }));
+        await tx.insert(workspaceApiKeyScopes).values(scopeRows);
+      }
+
+      return row;
+    });
 
     logger.info('[ApiKeysCreate] API key created', {
       requestId: ctx.requestId,
@@ -287,13 +293,18 @@ export function createRevokeApiKeyHandler({
         revokedBy: userId,
       })
       .where(
-        and(eq(workspaceApiKeys.id, payload.keyId), eq(workspaceApiKeys.workspaceId, workspaceId)),
+        and(
+          eq(workspaceApiKeys.id, payload.keyId),
+          eq(workspaceApiKeys.workspaceId, workspaceId),
+          eq(workspaceApiKeys.status, 'active'),
+        ),
       )
       .returning();
 
-    // Guard against TOCTOU race
+    // Atomic guard: if the UPDATE matched zero rows, a concurrent request
+    // already revoked the key between our SELECT and UPDATE.
     if (!updated) {
-      throw new DomainError('API key not found', 'NOT_FOUND', 404);
+      throw new DomainError('API key has already been revoked', 'ALREADY_REVOKED', 409);
     }
 
     logger.info('[ApiKeysRevoke] API key revoked', {
