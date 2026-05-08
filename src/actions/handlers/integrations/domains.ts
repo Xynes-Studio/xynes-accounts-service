@@ -108,6 +108,39 @@ function isUniqueViolation(err: unknown, constraintNames: string[]): boolean {
 }
 
 /**
+ * Defense-in-depth: detect a Postgres CHECK-constraint violation (SQLSTATE
+ * `23514`). The frontend `normalizeWorkspaceDomain` validator already
+ * mirrors every shape/lowercase/length rule expressed as a CHECK on
+ * `platform.workspace_domains`, so we should never reach here for valid
+ * input — but if the validator drifts from the DB schema (or a future
+ * constraint is added without a matching validator change), we want users
+ * to see a safe `INVALID_DOMAIN` 400 instead of a generic `INTERNAL_ERROR`
+ * 500. This also prevents the global `errorHandler` middleware from
+ * logging the failed insert (which carries `verification_value_hash` in
+ * its `params`) at error level for a known-validation failure.
+ *
+ * Maps the constraint name (when available) to a user-friendly message
+ * that matches what `normalizeWorkspaceDomain` would have said.
+ */
+function isCheckViolation(err: unknown): err is { code: '23514'; constraint_name?: string } {
+  const e = err as { code?: unknown };
+  return e?.code === '23514';
+}
+
+function checkViolationMessage(constraintName: string | undefined, hostname: string): string {
+  switch (constraintName) {
+    case 'workspace_domains_hostname_lower':
+      return `Hostname "${hostname}" must be lowercase`;
+    case 'workspace_domains_hostname_shape':
+      return `Hostname "${hostname}" is not in a valid shape`;
+    case 'workspace_domains_hostname_not_blank':
+      return 'Hostname must not be empty';
+    default:
+      return `Hostname "${hostname}" is not in a valid shape`;
+  }
+}
+
+/**
  * Default DNS resolver using the Bun/Node dns module.
  * Resolves TXT records and returns flat string array.
  * Each TXT record may be split into 255-byte chunks by the DNS protocol;
@@ -213,6 +246,26 @@ export function createCreateDomainHandler({
         ])
       ) {
         throw new DomainError(`Hostname "${hostname}" is already registered`, 'CONFLICT', 409);
+      }
+      if (isCheckViolation(err)) {
+        // Defense-in-depth: surface CHECK-constraint failures as a safe
+        // 400 INVALID_DOMAIN instead of falling through to the global
+        // error handler (which would log the failed insert + its
+        // verification_value_hash at error level and return 500).
+        const constraintName = (err as { constraint_name?: unknown }).constraint_name as
+          | string
+          | undefined;
+        logger.warn('[DomainsCreate] DB CHECK violation', {
+          requestId: ctx.requestId,
+          workspaceId,
+          hostname,
+          constraintName,
+        });
+        throw new DomainError(
+          checkViolationMessage(constraintName, hostname),
+          'INVALID_DOMAIN',
+          400,
+        );
       }
       throw err;
     }

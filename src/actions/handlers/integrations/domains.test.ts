@@ -372,6 +372,96 @@ describe('platform.domains.create', () => {
       expect((err as DomainError).code).toBe('CONFLICT');
     }
   });
+
+  it('returns INVALID_DOMAIN 400 when the DB raises a CHECK violation (defense-in-depth)', async () => {
+    // The frontend validator already mirrors every shape rule, so under
+    // normal operation this path is never hit. But if the validator
+    // drifts from the schema (or a future constraint is added without a
+    // matching validator change), users must still see a safe 400 — not
+    // a generic 500 with the failed insert leaking into error logs.
+    const db = makeFakeDb({
+      insertSpy: () => {
+        const error = new Error('check violation') as Error & {
+          code: string;
+          constraint_name: string;
+        };
+        error.code = '23514';
+        error.constraint_name = 'workspace_domains_hostname_shape';
+        throw error;
+      },
+    });
+    const handler = createCreateDomainHandler({
+      authzClient: makeAuthzClient(),
+      dbClient: db as any,
+    });
+    await expect(handler({ hostname: 'something.com' }, makeCtx())).rejects.toThrow(DomainError);
+    try {
+      await handler({ hostname: 'something.com' }, makeCtx());
+    } catch (err) {
+      const domainErr = err as DomainError;
+      expect(domainErr.code).toBe('INVALID_DOMAIN');
+      expect(domainErr.statusCode).toBe(400);
+      // Message must NOT include the raw constraint_name or any internal
+      // details — only a user-friendly hostname-shape message.
+      expect(domainErr.message).toContain('something.com');
+      expect(domainErr.message.toLowerCase()).toContain('shape');
+      expect(domainErr.message).not.toContain('23514');
+      expect(domainErr.message).not.toContain('workspace_domains_hostname_shape');
+    }
+  });
+
+  it('returns INVALID_DOMAIN with a lowercase-specific message for the lower CHECK', async () => {
+    const db = makeFakeDb({
+      insertSpy: () => {
+        const error = new Error('check violation') as Error & {
+          code: string;
+          constraint_name: string;
+        };
+        error.code = '23514';
+        error.constraint_name = 'workspace_domains_hostname_lower';
+        throw error;
+      },
+    });
+    const handler = createCreateDomainHandler({
+      authzClient: makeAuthzClient(),
+      dbClient: db as any,
+    });
+    try {
+      await handler({ hostname: 'something.com' }, makeCtx());
+    } catch (err) {
+      const domainErr = err as DomainError;
+      expect(domainErr.code).toBe('INVALID_DOMAIN');
+      expect(domainErr.statusCode).toBe(400);
+      expect(domainErr.message.toLowerCase()).toContain('lowercase');
+    }
+  });
+
+  it('returns INVALID_DOMAIN with a generic shape message for unknown CHECK constraints', async () => {
+    // Future-proofing: if a new CHECK is added on workspace_domains
+    // without a matching message mapping, the handler must still return
+    // a safe 400 (with the generic shape copy) rather than re-throwing
+    // and triggering the global 500 path.
+    const db = makeFakeDb({
+      insertSpy: () => {
+        const error = new Error('check violation') as Error & { code: string };
+        error.code = '23514';
+        // no constraint_name — exercises the `default` branch
+        throw error;
+      },
+    });
+    const handler = createCreateDomainHandler({
+      authzClient: makeAuthzClient(),
+      dbClient: db as any,
+    });
+    try {
+      await handler({ hostname: 'something.com' }, makeCtx());
+    } catch (err) {
+      const domainErr = err as DomainError;
+      expect(domainErr.code).toBe('INVALID_DOMAIN');
+      expect(domainErr.statusCode).toBe(400);
+      expect(domainErr.message).toContain('something.com');
+    }
+  });
 });
 
 // ═════════════════════════════════════════════════════════════════
