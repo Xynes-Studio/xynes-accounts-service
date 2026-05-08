@@ -31,6 +31,24 @@ Internal-only Accounts service. This service exposes **no public routes**.
 	- `X-XS-User-Email` (string)
 	- `X-XS-User-Name` (string)
 	- `X-XS-User-Avatar-Url` (string)
+- **Actor recognition (PFU-1, 2026-05-08):** the gateway forwards an
+  `X-XS-Actor-Type` header (`user` | `api_key`) plus, for `api_key`
+  actors, `X-XS-API-Key-Id` (UUID) and `X-XS-API-Key-Prefix` (8 hex
+  chars). When `actor=api_key`:
+	- `X-XS-User-Id` is **not** required (API keys have no human user).
+	- The handler context exposes `ctx.actor = { kind: "api_key",
+	  apiKeyId, keyPrefix }`.
+	- `requirePermission(...)` SHORT-CIRCUITS — the gateway has already
+	  enforced scope against the route `actionKey` (see
+	  `xynes-gateway/src/router/dynamicRouter.ts` Task 4). Re-running an
+	  authz user check here would be a layering violation.
+	- Handlers that record audit ownership (`createdBy`, `revokedBy`)
+	  use `requireUserActor(ctx)` and reject `api_key` actors with
+	  `FORBIDDEN_ACTOR_KIND` (403).
+	- Handlers that are read-only use `requireAuthenticatedActor(ctx)`
+	  to accept either actor kind.
+	- If `X-XS-Actor-Type` is absent or set to `user`, the route still
+	  requires `X-XS-User-Id` (legacy behaviour preserved byte-for-byte).
 - Request envelope:
 	- `{ actionKey: string, payload: unknown }`
 - Response envelope:
@@ -63,7 +81,7 @@ Reference ADR: `xynes-cms-core/docs/adr/001-testing-strategy.md`.
 
   - `src/actions/register.ts`: action registration
   - `src/actions/schemas.ts`: strict Zod payload schemas
-  - `src/actions/guards.ts`: shared context-validation and RBAC guard helpers (`requireUserId`, `requireWorkspaceId`, `requirePermission`)
+  - `src/actions/guards.ts`: shared context-validation and RBAC guard helpers (`requireUserId`, `requireWorkspaceId`, `requirePermission`, `requireUserActor`, `requireAuthenticatedActor`)
   - `src/actions/handlers/*`: action implementations
   - `src/actions/handlers/integrations/`: workspace admin integration utilities and handlers
     - `domainValidation.ts`: hostname normalization and validation for workspace verified domains
@@ -139,9 +157,10 @@ All behaviour is exposed via the internal “actions” endpoint.
 
 - `platform.domains.list` → payload `{}` → returns `{ domains: Array<DomainDto> }` (DB)
 
-	- Requires `X-XS-User-Id` and `X-Workspace-Id`
+	- Requires `X-XS-User-Id` (or any authenticated actor — see PFU-1) and `X-Workspace-Id`
 	- RBAC enforced via authz `POST /authz/check` for `platform.domains.list`
 	- Returns workspace domains; response never contains `verificationValueHash`
+	- **Accepts `api_key` actor** (read-only).
 
 - `platform.domains.create` → payload `{ hostname }` → returns `DomainDto & { verificationValue }` (DB)
 
@@ -150,6 +169,7 @@ All behaviour is exposed via the internal “actions” endpoint.
 	- Hostname is normalised and validated via `normalizeWorkspaceDomain`
 	- Verification value shown **once** in response; only the SHA-256 hash is stored in DB
 	- Returns CONFLICT (409) for duplicate active hostnames
+	- **Rejects `api_key` actor** with `FORBIDDEN_ACTOR_KIND` (403) — domain creation records `createdBy`.
 
 - `platform.domains.verify` → payload `{ domainId }` → returns `DomainDto` (DB + DNS)
 
@@ -157,6 +177,7 @@ All behaviour is exposed via the internal “actions” endpoint.
 	- RBAC enforced via authz for `platform.domains.verify`
 	- Performs DNS TXT record lookup against the stored verification name
 	- Updates `lastCheckedAt`, `status`, `verifiedAt`/`failureCode` based on DNS result
+	- **Rejects `api_key` actor** with `FORBIDDEN_ACTOR_KIND` (403) — DNS verification is a privileged human-driven workflow.
 
 - `platform.domains.delete` → payload `{ domainId }` → returns `DomainDto` (DB)
 
@@ -164,12 +185,14 @@ All behaviour is exposed via the internal “actions” endpoint.
 	- RBAC enforced via authz for `platform.domains.delete`
 	- **Soft-delete only**: sets `status = 'disabled'` to preserve audit history
 	- Does NOT physically remove the row from `platform.workspace_domains`
+	- **Rejects `api_key` actor** with `FORBIDDEN_ACTOR_KIND` (403).
 
 - `platform.api_keys.list` → payload `{}` → returns `{ apiKeys: Array<ApiKeyDto> }` (DB)
 
-	- Requires `X-XS-User-Id` and `X-Workspace-Id`
+	- Requires `X-XS-User-Id` (or any authenticated actor — see PFU-1) and `X-Workspace-Id`
 	- RBAC enforced via authz `POST /authz/check` for `platform.api_keys.list`
 	- Returns workspace API keys; response never contains `keyHash` or the raw key
+	- **Accepts `api_key` actor** (read-only). The `workspace_admin` preset includes this scope.
 
 - `platform.api_keys.create` → payload `{ name, presetKey, expiresAt? }` → returns `ApiKeyDto & { rawKey, scopes }` (DB)
 
@@ -179,6 +202,7 @@ All behaviour is exposed via the internal “actions” endpoint.
 	- Raw key shown **once** in response; only Argon2id hash + 8-char prefix stored in DB
 	- Returns INVALID_PRESET (400) for unknown preset keys
 	- Returns HTTP 201 on success
+	- **Rejects `api_key` actor** with `FORBIDDEN_ACTOR_KIND` (403) — privilege escalation guard. The MVP `workspace_admin` preset deliberately omits this scope; this branch is defense-in-depth.
 
 - `platform.api_keys.revoke` → payload `{ keyId }` → returns `ApiKeyDto` (DB)
 
@@ -187,13 +211,15 @@ All behaviour is exposed via the internal “actions” endpoint.
 	- Sets `status = 'revoked'`, records `revokedBy` (userId) and `revokedAt`
 	- Returns ALREADY_REVOKED (409) if key is already revoked
 	- Does NOT physically delete the row from `platform.workspace_api_keys`
+	- **Rejects `api_key` actor** with `FORBIDDEN_ACTOR_KIND` (403) — privilege escalation guard.
 
 - `platform.api_keys.usage.read` → payload `{ keyId }` → returns `{ keyId, name, status, lastUsedAt, createdAt, scopes }` (DB)
 
-	- Requires `X-XS-User-Id` and `X-Workspace-Id`
+	- Requires `X-XS-User-Id` (or any authenticated actor — see PFU-1) and `X-Workspace-Id`
 	- RBAC enforced via authz for `platform.api_keys.usage.read`
 	- Returns key metadata + last usage timestamp + associated scopes
 	- Response never contains `keyHash` or raw key
+	- **Accepts `api_key` actor** (read-only). The `workspace_admin` preset includes this scope.
 
 ### Adding a new action (TDD workflow)
 

@@ -9,7 +9,8 @@ import type { AuthzClient } from '../../../infra/authz/authzClient';
 import { normalizeWorkspaceDomain } from './domainValidation';
 import type { ActionContext } from '../../types';
 import {
-  requireUserId,
+  requireUserActor,
+  requireAuthenticatedActor,
   requireWorkspaceId,
   requirePermission,
   resolveAuthzClient,
@@ -176,7 +177,8 @@ export function createListDomainsHandler({
   authzClient,
 }: DomainHandlerDependencies = {}) {
   return async (_payload: ListDomainsPayload, ctx: ActionContext): Promise<ListDomainsResult> => {
-    requireUserId(ctx);
+    // PFU-1 — Read-only: accept either user OR api_key actor.
+    requireAuthenticatedActor(ctx);
     const workspaceId = requireWorkspaceId(ctx);
     const resolvedAuthz = resolveAuthzClient(authzClient);
 
@@ -207,7 +209,8 @@ export function createCreateDomainHandler({
     payload: CreateDomainPayload,
     ctx: ActionContext,
   ): Promise<CreateDomainResultDto> => {
-    const userId = requireUserId(ctx);
+    // PFU-1 — Write that records `createdBy`: requires a human user.
+    const userId = requireUserActor(ctx);
     const workspaceId = requireWorkspaceId(ctx);
     const resolvedAuthz = resolveAuthzClient(authzClient);
 
@@ -292,7 +295,11 @@ export function createVerifyDomainHandler({
   dnsResolver = defaultDnsResolver,
 }: DomainHandlerDependencies = {}) {
   return async (payload: VerifyDomainPayload, ctx: ActionContext): Promise<DomainDto> => {
-    requireUserId(ctx);
+    // PFU-1 — Mutating action: requires a human user (no createdBy/revokedBy
+    // here, but DNS verification mutates the row's status/verifiedAt and
+    // is gated behind a domain-management permission catalog entry that
+    // is only granted to human users at this MVP).
+    requireUserActor(ctx);
     const workspaceId = requireWorkspaceId(ctx);
     const resolvedAuthz = resolveAuthzClient(authzClient);
 
@@ -486,7 +493,9 @@ export function createRegenerateVerificationHandler({
     payload: RegenerateVerificationPayload,
     ctx: ActionContext,
   ): Promise<CreateDomainResultDto> => {
-    requireUserId(ctx);
+    // PFU-1 — Mutating action that issues a fresh one-time verification
+    // secret: requires a human user (same reasoning as verify above).
+    requireUserActor(ctx);
     const workspaceId = requireWorkspaceId(ctx);
     const resolvedAuthz = resolveAuthzClient(authzClient);
 
@@ -576,7 +585,9 @@ export function createDeleteDomainHandler({
   authzClient,
 }: DomainHandlerDependencies = {}) {
   return async (payload: DeleteDomainPayload, ctx: ActionContext): Promise<DomainDto> => {
-    requireUserId(ctx);
+    // PFU-1 — Soft-delete: requires a human user. The audit trail for
+    // who disabled the domain is preserved on the row's `updatedAt`.
+    requireUserActor(ctx);
     const workspaceId = requireWorkspaceId(ctx);
     const resolvedAuthz = resolveAuthzClient(authzClient);
 

@@ -9,7 +9,8 @@ import type { AuthzClient } from '../../../infra/authz/authzClient';
 import { generateWorkspaceApiKey } from './apiKeyCrypto';
 import type { ActionContext } from '../../types';
 import {
-  requireUserId,
+  requireUserActor,
+  requireAuthenticatedActor,
   requireWorkspaceId,
   requirePermission,
   resolveAuthzClient,
@@ -155,7 +156,8 @@ export function createListApiKeysHandler({
   authzClient,
 }: ApiKeyHandlerDependencies = {}) {
   return async (_payload: ListApiKeysPayload, ctx: ActionContext): Promise<ListApiKeysResult> => {
-    requireUserId(ctx);
+    // PFU-1 — Read-only: accept either user OR api_key actor.
+    requireAuthenticatedActor(ctx);
     const workspaceId = requireWorkspaceId(ctx);
     const resolvedAuthz = resolveAuthzClient(authzClient);
 
@@ -189,7 +191,12 @@ export function createCreateApiKeyHandler({
     payload: CreateApiKeyPayload,
     ctx: ActionContext,
   ): Promise<CreateApiKeyResultDto> => {
-    const userId = requireUserId(ctx);
+    // PFU-1 — Write that records `createdBy`: requires a human user.
+    // Reject api_key actors with FORBIDDEN_ACTOR_KIND. (The MVP
+    // `workspace_admin` preset does not include `platform.api_keys.create`,
+    // so this branch is defense-in-depth: gateway scope check would
+    // reject the call before it ever reached this handler.)
+    const userId = requireUserActor(ctx);
     const workspaceId = requireWorkspaceId(ctx);
     const resolvedAuthz = resolveAuthzClient(authzClient);
 
@@ -261,7 +268,10 @@ export function createRevokeApiKeyHandler({
   authzClient,
 }: ApiKeyHandlerDependencies = {}) {
   return async (payload: RevokeApiKeyPayload, ctx: ActionContext): Promise<ApiKeyDto> => {
-    const userId = requireUserId(ctx);
+    // PFU-1 — Write that records `revokedBy`: requires a human user.
+    // (Same defense-in-depth note as create — gateway preset enforcement
+    // would block an api_key actor first.)
+    const userId = requireUserActor(ctx);
     const workspaceId = requireWorkspaceId(ctx);
     const resolvedAuthz = resolveAuthzClient(authzClient);
 
@@ -332,7 +342,8 @@ export function createReadApiKeyUsageHandler({
     payload: ReadApiKeyUsagePayload,
     ctx: ActionContext,
   ): Promise<ApiKeyUsageResult> => {
-    requireUserId(ctx);
+    // PFU-1 — Read-only: accept either user OR api_key actor.
+    requireAuthenticatedActor(ctx);
     const workspaceId = requireWorkspaceId(ctx);
     const resolvedAuthz = resolveAuthzClient(authzClient);
 
