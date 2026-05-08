@@ -36,6 +36,7 @@ import {
   platformApiKeysRevokePayloadSchema,
   platformApiKeysUsageReadPayloadSchema,
 } from '../actions/schemas';
+import type { ActionActor } from '../actions/types';
 
 const internalRoute = new Hono();
 internalRoute.use('*', requireInternalServiceAuth());
@@ -48,6 +49,14 @@ const actionRequestSchema = z
   .strict();
 
 const uuidHeader = z.string().uuid();
+// PFU-1 — gateway emits `X-XS-API-Key-Prefix` as the first 8 hex chars
+// of the secret portion of `xynes_live_<hex>` (see
+// `xynes-gateway/src/security/apiKeyAuth.ts` API_KEY_LOOKUP_PREFIX_LENGTH).
+// We validate the shape defensively so a malformed prefix never reaches
+// downstream audit logs.
+const apiKeyPrefixHeader = z.string().regex(/^[a-f0-9]{8}$/, 'must be 8 hex chars');
+// PFU-1 — Recognised actor kinds. Gateway emits exactly these values.
+const ACTOR_KINDS = new Set(['user', 'api_key']);
 
 const NON_WORKSPACE_ACTION_KEYS = new Set<AccountsActionKey>([
   'accounts.me.getOrCreate',
@@ -78,20 +87,113 @@ internalRoute.post('/accounts-actions', async (c) => {
   const { actionKey, payload: rawPayload } = result.data;
 
   const key = actionKey as AccountsActionKey;
-  const userRequired = !PUBLIC_ACTION_KEYS.has(key);
-  const rawUserId = c.req.header('X-XS-User-Id');
-  if (userRequired && !rawUserId) {
+  const isPublicAction = PUBLIC_ACTION_KEYS.has(key);
+
+  // PFU-1 — Resolve the actor from gateway-emitted internal headers.
+  //
+  // Contract (mirrors xynes-gateway `buildInternalHeaders`):
+  //   - `X-XS-Actor-Type`: 'user' | 'api_key' | absent (defaults to 'user'
+  //                         to preserve pre-PFU-1 behaviour byte-for-byte).
+  //   - User actor:    requires `X-XS-User-Id` (UUID).
+  //   - API-key actor: requires `X-XS-API-Key-Id` (UUID) +
+  //                    `X-XS-API-Key-Prefix` (8 hex chars).
+  //
+  // Public actions (PUBLIC_ACTION_KEYS) bypass actor resolution entirely
+  // — they may be invoked anonymously.
+  const rawActorType = c.req.header('X-XS-Actor-Type');
+  if (rawActorType && !ACTOR_KINDS.has(rawActorType)) {
     return c.json(
-      createErrorResponse('UNAUTHORIZED', 'X-XS-User-Id header is required', requestId),
-      401,
-    );
-  }
-  const userIdResult = rawUserId ? uuidHeader.safeParse(rawUserId) : null;
-  if (userRequired && (!userIdResult || !userIdResult.success)) {
-    return c.json(
-      createErrorResponse('INVALID_HEADER', 'X-XS-User-Id must be a UUID', requestId),
+      createErrorResponse(
+        'INVALID_HEADER',
+        'X-XS-Actor-Type must be one of: user, api_key',
+        requestId,
+      ),
       400,
     );
+  }
+  const actorType: 'user' | 'api_key' = rawActorType === 'api_key' ? 'api_key' : 'user';
+
+  let actor: ActionActor | undefined;
+  let resolvedUserId: string | null = null;
+
+  if (!isPublicAction) {
+    if (actorType === 'api_key') {
+      const rawApiKeyId = c.req.header('X-XS-API-Key-Id');
+      if (!rawApiKeyId) {
+        return c.json(
+          createErrorResponse(
+            'INVALID_HEADER',
+            'X-XS-API-Key-Id header is required for api_key actor',
+            requestId,
+          ),
+          400,
+        );
+      }
+      const apiKeyIdResult = uuidHeader.safeParse(rawApiKeyId);
+      if (!apiKeyIdResult.success) {
+        return c.json(
+          createErrorResponse('INVALID_HEADER', 'X-XS-API-Key-Id must be a UUID', requestId),
+          400,
+        );
+      }
+      const rawApiKeyPrefix = c.req.header('X-XS-API-Key-Prefix');
+      if (!rawApiKeyPrefix) {
+        return c.json(
+          createErrorResponse(
+            'INVALID_HEADER',
+            'X-XS-API-Key-Prefix header is required for api_key actor',
+            requestId,
+          ),
+          400,
+        );
+      }
+      const apiKeyPrefixResult = apiKeyPrefixHeader.safeParse(rawApiKeyPrefix);
+      if (!apiKeyPrefixResult.success) {
+        return c.json(
+          createErrorResponse(
+            'INVALID_HEADER',
+            'X-XS-API-Key-Prefix must be 8 hex chars',
+            requestId,
+          ),
+          400,
+        );
+      }
+      actor = {
+        kind: 'api_key',
+        apiKeyId: apiKeyIdResult.data,
+        keyPrefix: apiKeyPrefixResult.data,
+      };
+      // resolvedUserId stays null — api_key actors carry no user identity.
+    } else {
+      // user actor (default)
+      const rawUserId = c.req.header('X-XS-User-Id');
+      if (!rawUserId) {
+        return c.json(
+          createErrorResponse('UNAUTHORIZED', 'X-XS-User-Id header is required', requestId),
+          401,
+        );
+      }
+      const userIdResult = uuidHeader.safeParse(rawUserId);
+      if (!userIdResult.success) {
+        return c.json(
+          createErrorResponse('INVALID_HEADER', 'X-XS-User-Id must be a UUID', requestId),
+          400,
+        );
+      }
+      resolvedUserId = userIdResult.data;
+      actor = { kind: 'user', userId: userIdResult.data };
+    }
+  } else {
+    // Public action — actor is optional. If a user id was forwarded by
+    // the gateway anyway, capture it for audit purposes.
+    const rawUserId = c.req.header('X-XS-User-Id');
+    if (rawUserId) {
+      const userIdResult = uuidHeader.safeParse(rawUserId);
+      if (userIdResult.success) {
+        resolvedUserId = userIdResult.data;
+        actor = { kind: 'user', userId: userIdResult.data };
+      }
+    }
   }
 
   const workspaceRequired = !NON_WORKSPACE_ACTION_KEYS.has(key);
@@ -118,18 +220,21 @@ internalRoute.post('/accounts-actions', async (c) => {
 
   const ctx = {
     workspaceId,
-    userId: userIdResult && userIdResult.success ? userIdResult.data : null,
+    userId: resolvedUserId,
     requestId,
     user: {
       email: c.req.header('X-XS-User-Email') ?? undefined,
       name: c.req.header('X-XS-User-Name') ?? undefined,
       avatarUrl: c.req.header('X-XS-User-Avatar-Url') ?? undefined,
     },
+    actor,
   };
 
   logger.info(`Received internal action: ${actionKey}`, {
     workspaceId: ctx.workspaceId,
     userId: ctx.userId,
+    actorType: actor?.kind ?? 'anonymous',
+    apiKeyId: actor?.kind === 'api_key' ? actor.apiKeyId : undefined,
     requestId,
   });
 

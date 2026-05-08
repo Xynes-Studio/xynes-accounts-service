@@ -1145,6 +1145,115 @@ describe('platform.domains.delete', () => {
   });
 });
 
+// ═════════════════════════════════════════════════════════════════
+// PFU-1 — actor-aware behaviour for the five domain handlers.
+// ═════════════════════════════════════════════════════════════════
+
+describe('platform.domains — actor-aware behaviour (PFU-1)', () => {
+  const API_KEY_ACTOR_ID = '550e8400-e29b-41d4-a716-446655440099';
+  const API_KEY_ACTOR_PREFIX = 'a1b2c3d4';
+
+  function makeApiKeyActorCtx(overrides: Partial<ActionContext> = {}): ActionContext {
+    return {
+      workspaceId: WORKSPACE_ID,
+      userId: null,
+      requestId: 'req-test-pfu-1',
+      actor: {
+        kind: 'api_key',
+        apiKeyId: API_KEY_ACTOR_ID,
+        keyPrefix: API_KEY_ACTOR_PREFIX,
+      },
+      ...overrides,
+    };
+  }
+
+  // Deny-all authz: the api_key path must NEVER call it.
+  const denyAllAuthz = {
+    checkPermission: async () => false,
+    assignRole: async () => {},
+    listRolesForWorkspace: async () => [],
+  } as any;
+
+  describe('platform.domains.list', () => {
+    it('accepts api_key actor without invoking authz check', async () => {
+      const handler = createListDomainsHandler({
+        authzClient: denyAllAuthz, // would deny if called
+        dbClient: makeFakeDb({ selectRows: [makeDomainRow()] }) as any,
+      });
+      const result = await handler({}, makeApiKeyActorCtx());
+      expect(result.domains).toHaveLength(1);
+    });
+  });
+
+  describe('platform.domains.create', () => {
+    it('rejects api_key actor with FORBIDDEN_ACTOR_KIND', async () => {
+      const handler = createCreateDomainHandler({
+        authzClient: makeAuthzClient(true),
+        dbClient: makeFakeDb() as any,
+      });
+      let captured: DomainError | null = null;
+      try {
+        await handler({ hostname: 'denied.example.com' }, makeApiKeyActorCtx());
+      } catch (err) {
+        captured = err as DomainError;
+      }
+      expect(captured).toBeInstanceOf(DomainError);
+      expect(captured!.code).toBe('FORBIDDEN_ACTOR_KIND');
+    });
+  });
+
+  describe('platform.domains.verify', () => {
+    it('rejects api_key actor with FORBIDDEN_ACTOR_KIND', async () => {
+      const handler = createVerifyDomainHandler({
+        authzClient: makeAuthzClient(true),
+        dbClient: makeFakeDb({ selectRows: [makeDomainRow()] }) as any,
+      });
+      let captured: DomainError | null = null;
+      try {
+        await handler({ domainId: DOMAIN_ID }, makeApiKeyActorCtx());
+      } catch (err) {
+        captured = err as DomainError;
+      }
+      expect(captured).toBeInstanceOf(DomainError);
+      expect(captured!.code).toBe('FORBIDDEN_ACTOR_KIND');
+    });
+  });
+
+  describe('platform.domains.regenerateVerification', () => {
+    it('rejects api_key actor with FORBIDDEN_ACTOR_KIND', async () => {
+      const handler = createRegenerateVerificationHandler({
+        authzClient: makeAuthzClient(true),
+        dbClient: makeFakeDb({ selectRows: [makeDomainRow()] }) as any,
+      });
+      let captured: DomainError | null = null;
+      try {
+        await handler({ domainId: DOMAIN_ID }, makeApiKeyActorCtx());
+      } catch (err) {
+        captured = err as DomainError;
+      }
+      expect(captured).toBeInstanceOf(DomainError);
+      expect(captured!.code).toBe('FORBIDDEN_ACTOR_KIND');
+    });
+  });
+
+  describe('platform.domains.delete', () => {
+    it('rejects api_key actor with FORBIDDEN_ACTOR_KIND', async () => {
+      const handler = createDeleteDomainHandler({
+        authzClient: makeAuthzClient(true),
+        dbClient: makeFakeDb({ selectRows: [makeDomainRow()] }) as any,
+      });
+      let captured: DomainError | null = null;
+      try {
+        await handler({ domainId: DOMAIN_ID }, makeApiKeyActorCtx());
+      } catch (err) {
+        captured = err as DomainError;
+      }
+      expect(captured).toBeInstanceOf(DomainError);
+      expect(captured!.code).toBe('FORBIDDEN_ACTOR_KIND');
+    });
+  });
+});
+
 // ── Test-only hash utility ─────────────────────────────────────
 
 async function hashForTest(value: string): Promise<string> {

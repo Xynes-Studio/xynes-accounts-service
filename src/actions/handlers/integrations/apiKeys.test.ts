@@ -743,3 +743,102 @@ describe('platform.api_keys.usage.read', () => {
     expect(JSON.stringify(result)).not.toContain('argon2id');
   });
 });
+
+// ═════════════════════════════════════════════════════════════════
+// PFU-1 — actor-aware behaviour for the four api_keys handlers.
+//
+// Read-only handlers (`list`, `usage.read`) accept either user OR
+// api_key actor. Write handlers (`create`, `revoke`) require a human
+// user — an api_key actor is rejected with FORBIDDEN_ACTOR_KIND.
+// ═════════════════════════════════════════════════════════════════
+
+describe('platform.api_keys — actor-aware behaviour (PFU-1)', () => {
+  const API_KEY_ACTOR_ID = '550e8400-e29b-41d4-a716-446655440099';
+  const API_KEY_ACTOR_PREFIX = 'a1b2c3d4';
+
+  function makeApiKeyActorCtx(overrides: Partial<ActionContext> = {}): ActionContext {
+    return {
+      workspaceId: WORKSPACE_ID,
+      userId: null, // api_key actors carry no user identity
+      requestId: 'req-test-pfu-1',
+      actor: {
+        kind: 'api_key',
+        apiKeyId: API_KEY_ACTOR_ID,
+        keyPrefix: API_KEY_ACTOR_PREFIX,
+      },
+      ...overrides,
+    };
+  }
+
+  // The fake authz client below is configured to DENY all permission
+  // checks. The api_key actor branch must NEVER call it (gateway has
+  // already enforced scope), so a deny-all client confirms the short-
+  // circuit holds without us having to spy on the call.
+  const denyAllAuthz = {
+    checkPermission: async () => false,
+    assignRole: async () => {},
+    listRolesForWorkspace: async () => [],
+  } as any;
+
+  describe('platform.api_keys.list', () => {
+    it('accepts api_key actor without invoking authz check', async () => {
+      const rows = [makeApiKeyRow()];
+      const handler = createListApiKeysHandler({
+        authzClient: denyAllAuthz, // would deny if called
+        dbClient: makeFakeDb({ selectRows: rows }) as any,
+      });
+      const result = await handler({}, makeApiKeyActorCtx());
+      expect(result.apiKeys).toHaveLength(1);
+    });
+  });
+
+  describe('platform.api_keys.usage.read', () => {
+    it('accepts api_key actor without invoking authz check', async () => {
+      const row = makeApiKeyRow();
+      const handler = createReadApiKeyUsageHandler({
+        authzClient: denyAllAuthz,
+        dbClient: makeFakeDb({ selectRows: [row] }) as any,
+      });
+      const result = await handler({ keyId: KEY_ID }, makeApiKeyActorCtx());
+      expect(result.keyId).toBe(KEY_ID);
+    });
+  });
+
+  describe('platform.api_keys.create', () => {
+    it('rejects api_key actor with FORBIDDEN_ACTOR_KIND', async () => {
+      const handler = createCreateApiKeyHandler({
+        authzClient: makeAuthzClient(true),
+        dbClient: makeFakeDb() as any,
+        keyGenerator: makeFakeKeyGenerator(),
+      });
+      let captured: DomainError | null = null;
+      try {
+        await handler(
+          { name: 'Should be denied', presetKey: 'cms_readonly' },
+          makeApiKeyActorCtx(),
+        );
+      } catch (err) {
+        captured = err as DomainError;
+      }
+      expect(captured).toBeInstanceOf(DomainError);
+      expect(captured!.code).toBe('FORBIDDEN_ACTOR_KIND');
+    });
+  });
+
+  describe('platform.api_keys.revoke', () => {
+    it('rejects api_key actor with FORBIDDEN_ACTOR_KIND', async () => {
+      const handler = createRevokeApiKeyHandler({
+        authzClient: makeAuthzClient(true),
+        dbClient: makeFakeDb({ selectRows: [makeApiKeyRow()] }) as any,
+      });
+      let captured: DomainError | null = null;
+      try {
+        await handler({ keyId: KEY_ID }, makeApiKeyActorCtx());
+      } catch (err) {
+        captured = err as DomainError;
+      }
+      expect(captured).toBeInstanceOf(DomainError);
+      expect(captured!.code).toBe('FORBIDDEN_ACTOR_KIND');
+    });
+  });
+});
