@@ -79,6 +79,19 @@ export const platformDomainsVerifyPayloadSchema = z
   })
   .strict();
 
+/**
+ * platform.domains.regenerateVerification — issues a fresh DNS TXT
+ * verification token for an existing pending/failed domain row.
+ *
+ * Same payload shape as verify/delete; the handler is responsible for
+ * the status-allowlist check (only `pending` and `failed` may regenerate).
+ */
+export const platformDomainsRegenerateVerificationPayloadSchema = z
+  .object({
+    domainId: z.string().uuid(),
+  })
+  .strict();
+
 export const platformDomainsDeletePayloadSchema = z
   .object({
     domainId: z.string().uuid(),

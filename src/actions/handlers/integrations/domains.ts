@@ -32,6 +32,13 @@ export type DomainDto = {
   updatedAt: string;
   failureCode: string | null;
   failureMessage: string | null;
+  /**
+   * Count-only diagnostic surfaced by the verify handler. NEVER carries
+   * raw TXT record values (those could be attacker-supplied content from
+   * a hostile DNS zone). NULL when no verify attempt has been made or
+   * DNS lookup itself errored before any records were enumerated.
+   */
+  dnsRecordsFound: number | null;
 };
 
 /** Extended DTO returned only from the create action. */
@@ -73,6 +80,7 @@ function toDto(row: typeof workspaceDomains.$inferSelect): DomainDto {
     updatedAt: row.updatedAt.toISOString(),
     failureCode: row.failureCode,
     failureMessage: row.failureMessage,
+    dnsRecordsFound: row.dnsRecordsFound ?? null,
   };
 }
 
@@ -311,11 +319,28 @@ export function createVerifyDomainHandler({
     // Attempt DNS verification
     let dnsRecords: string[] = [];
     let dnsError: string | null = null;
+    // Categorized error class for the FE diagnostic strip. We capture the
+    // resolver-side class once and feed it into the failure-code mapping
+    // below so we never have to re-parse a raw error string.
+    let dnsErrorClass: 'NXDOMAIN' | 'TIMEOUT' | 'DNS_ERROR' | null = null;
 
     try {
       dnsRecords = await dnsResolver(domain.verificationName, 'TXT');
     } catch (err) {
       dnsError = err instanceof Error ? err.message : 'Unknown DNS error';
+      // Node/Bun dns module surfaces these as `error.code` strings. We
+      // classify the common ones; everything else falls through to the
+      // generic DNS_ERROR bucket. Never echo the raw error to the caller —
+      // it can carry resolver-internal hostnames or stack frames that
+      // would only confuse a workspace owner reading the failure message.
+      const code = (err as { code?: unknown }).code;
+      if (code === 'ENOTFOUND' || code === 'ENODATA') {
+        dnsErrorClass = 'NXDOMAIN';
+      } else if (code === 'ETIMEOUT' || code === 'ESERVFAIL' || code === 'EREFUSED') {
+        dnsErrorClass = 'TIMEOUT';
+      } else {
+        dnsErrorClass = 'DNS_ERROR';
+      }
     }
 
     // Check if any TXT record matches the stored hash
@@ -334,27 +359,53 @@ export function createVerifyDomainHandler({
     const updateValues: Record<string, unknown> = {
       lastCheckedAt: now,
       updatedAt: now,
+      // Phase B: surface a count-only diagnostic. Null when DNS lookup
+      // errored before records could be enumerated; 0 when the lookup
+      // succeeded but returned no TXT records (NXDOMAIN-with-empty,
+      // unconfigured zone, etc.); ≥1 otherwise. NEVER stores raw values.
+      dnsRecordsFound: dnsError ? null : dnsRecords.length,
     };
 
     if (dnsError) {
       updateValues.status = 'failed';
-      updateValues.failureCode = 'DNS_ERROR';
+      updateValues.failureCode = dnsErrorClass ?? 'DNS_ERROR';
       // Log raw DNS error server-side for debugging; return safe message to caller
       logger.warn('[DomainsVerify] DNS resolution failed', {
         requestId: ctx.requestId,
         domainId: payload.domainId,
         rawError: dnsError,
+        failureCode: updateValues.failureCode,
       });
-      updateValues.failureMessage = 'DNS resolution failed for the verification name';
+      // User-facing message intentionally short and neutral. The
+      // detailed diagnostic strip on the FE drives the conversation.
+      updateValues.failureMessage =
+        dnsErrorClass === 'NXDOMAIN'
+          ? 'No DNS record found at the verification name yet. DNS propagation can take up to 24h.'
+          : dnsErrorClass === 'TIMEOUT'
+            ? 'DNS lookup timed out. Try again in a moment.'
+            : 'DNS resolution failed for the verification name';
     } else if (verified) {
       updateValues.status = 'verified';
       updateValues.verifiedAt = now;
       updateValues.failureCode = null;
       updateValues.failureMessage = null;
+    } else if (dnsRecords.length === 0) {
+      // NXDOMAIN-ish path where the resolver returns successfully but
+      // with no TXT records under the name (different from ENOTFOUND
+      // depending on resolver implementation). Surface as a separate
+      // code so the FE can distinguish "DNS lookup worked but the
+      // record isn't there yet" from "nothing matched".
+      updateValues.status = 'failed';
+      updateValues.failureCode = 'NO_RECORDS';
+      updateValues.failureMessage =
+        'No TXT records found at the verification name. DNS propagation can take up to 24h.';
     } else {
       updateValues.status = 'failed';
-      updateValues.failureCode = 'DNS_MISMATCH';
-      updateValues.failureMessage = 'No matching TXT record found for the verification name';
+      updateValues.failureCode = 'MISMATCH';
+      updateValues.failureMessage =
+        dnsRecords.length === 1
+          ? 'Found 1 TXT record at the verification name, but its value did not match.'
+          : `Found ${dnsRecords.length} TXT records at the verification name, but none matched.`;
     }
 
     const [updated] = await dbClient
@@ -381,6 +432,134 @@ export function createVerifyDomainHandler({
     });
 
     return toDto(updated);
+  };
+}
+
+// ── REGENERATE VERIFICATION ─────────────────────────────────────
+
+export type RegenerateVerificationPayload = {
+  domainId: string;
+};
+
+/**
+ * Issue a fresh DNS TXT verification token for an existing
+ * pending/failed domain row. The user clicks "Get new value" when they
+ * have lost the original one-time reveal — the server stores ONLY the
+ * SHA-256 hash of the verification value (per the workspace-admin-
+ * integrations epic invariant), so recopying an already-revealed value
+ * is impossible by design. This handler is the supported recovery path.
+ *
+ * Permission contract: gated by `platform.domains.regenerateVerification`,
+ * a permission key in the authz catalog with the SAME effective grants
+ * as `platform.domains.create` (both are catalog-derived for
+ * workspace_owner / super_admin; explicit-allowlist lower-tier roles
+ * receive neither). Modeled as its own key (not a re-use of the create
+ * key) so the gateway's "route action_key === permission key" invariant
+ * holds without permission-lookup substitution.
+ *
+ * State contract:
+ *  - Allowed only when status IN ('pending', 'failed').
+ *  - Forbids `verified` (a verified domain has no need for a fresh
+ *    token; regenerating would silently revoke verification) → 409 CONFLICT.
+ *  - Forbids `disabled` (the soft-deleted state must remain inert) →
+ *    409 CONFLICT.
+ *
+ * Side effects on success:
+ *  - `verification_value_hash` swapped atomically.
+ *  - `status` set to `pending` (reset from `failed`).
+ *  - `failure_code`, `failure_message`, `last_checked_at` reset to NULL.
+ *  - `updated_at` set to now().
+ *  - `verified_at` is intentionally NOT touched (it should still be NULL
+ *    in either of the allowed source states; if it isn't, the row was
+ *    tampered with externally and we'd rather preserve the audit trail).
+ *  - `dns_records_found` (Phase B) is reset to NULL — the previous
+ *    diagnostic counter applied to the previous secret.
+ *
+ * Returns the same shape as `platform.domains.create` so the FE can use
+ * the same one-time reveal slot.
+ */
+export function createRegenerateVerificationHandler({
+  dbClient = db,
+  authzClient,
+}: DomainHandlerDependencies = {}) {
+  return async (
+    payload: RegenerateVerificationPayload,
+    ctx: ActionContext,
+  ): Promise<CreateDomainResultDto> => {
+    requireUserId(ctx);
+    const workspaceId = requireWorkspaceId(ctx);
+    const resolvedAuthz = resolveAuthzClient(authzClient);
+
+    // Reuse the create permission — see contract note above.
+    await requirePermission(resolvedAuthz, ctx, 'platform.domains.regenerateVerification');
+
+    // Fetch domain — must belong to the requesting workspace
+    const rows = await dbClient
+      .select()
+      .from(workspaceDomains)
+      .where(
+        and(
+          eq(workspaceDomains.id, payload.domainId),
+          eq(workspaceDomains.workspaceId, workspaceId),
+        ),
+      );
+
+    const domain = rows[0];
+    if (!domain) {
+      throw new DomainError('Domain not found', 'NOT_FOUND', 404);
+    }
+
+    if (domain.status !== 'pending' && domain.status !== 'failed') {
+      throw new DomainError(
+        `Cannot regenerate verification for a ${domain.status} domain`,
+        'CONFLICT',
+        409,
+      );
+    }
+
+    // Generate a fresh one-time verification secret
+    const { rawValue, hashedValue } = await generateVerificationSecret();
+
+    const now = new Date();
+    const [updated] = await dbClient
+      .update(workspaceDomains)
+      .set({
+        status: 'pending',
+        verificationValueHash: hashedValue,
+        failureCode: null,
+        failureMessage: null,
+        lastCheckedAt: null,
+        // The previous diagnostic counter applied to the previous secret
+        // (a different `verificationValueHash`); the count is meaningless
+        // for the freshly-issued token. Reset to NULL so the FE diagnostic
+        // strip shows the correct "no verify attempt yet" state.
+        dnsRecordsFound: null,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(workspaceDomains.id, payload.domainId),
+          eq(workspaceDomains.workspaceId, workspaceId),
+        ),
+      )
+      .returning();
+
+    // TOCTOU guard — see verify/delete handlers.
+    if (!updated) {
+      throw new DomainError('Domain not found', 'NOT_FOUND', 404);
+    }
+
+    logger.info('[DomainsRegenerateVerification] Verification token reissued', {
+      requestId: ctx.requestId,
+      workspaceId,
+      domainId: payload.domainId,
+      previousStatus: domain.status,
+    });
+
+    return {
+      ...toDto(updated),
+      verificationValue: rawValue,
+    };
   };
 }
 
@@ -456,6 +635,7 @@ export function createDeleteDomainHandler({
 export const listDomainsHandler = createListDomainsHandler();
 export const createDomainHandler = createCreateDomainHandler();
 export const verifyDomainHandler = createVerifyDomainHandler();
+export const regenerateVerificationHandler = createRegenerateVerificationHandler();
 export const deleteDomainHandler = createDeleteDomainHandler();
 
 // ── Internal utility ────────────────────────────────────────────
@@ -467,3 +647,20 @@ async function hashValue(value: string): Promise<string> {
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
 }
+
+/**
+ * Categorized failure codes surfaced by the verify handler.
+ *
+ * The frontend translates these into a 3-step diagnostic strip:
+ *
+ *   - DNS lookup    → ✗ on NXDOMAIN | TIMEOUT | DNS_ERROR; ✓ otherwise
+ *   - TXT records   → "N records" (✗ when 0 → NO_RECORDS; ✓ when ≥1)
+ *   - Value match   → ✗ on MISMATCH; ✓ on verified
+ *
+ * Codes are stable contract; the user-facing `failure_message` text is
+ * advisory and may change without breaking the FE.
+ *
+ * Security: codes never echo the resolver's raw error string back; the
+ * raw error is logged server-side for debugging only.
+ */
+export type DomainFailureCode = 'NXDOMAIN' | 'TIMEOUT' | 'DNS_ERROR' | 'NO_RECORDS' | 'MISMATCH';

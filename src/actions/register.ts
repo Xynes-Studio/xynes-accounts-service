@@ -15,6 +15,7 @@ import {
   listDomainsHandler,
   createDomainHandler,
   verifyDomainHandler,
+  regenerateVerificationHandler,
   deleteDomainHandler,
 } from './handlers/integrations/domains';
 import {
@@ -42,6 +43,7 @@ export function registerAccountsActions() {
   registerAction('platform.domains.list', listDomainsHandler);
   registerAction('platform.domains.create', createDomainHandler);
   registerAction('platform.domains.verify', verifyDomainHandler);
+  registerAction('platform.domains.regenerateVerification', regenerateVerificationHandler);
   registerAction('platform.domains.delete', deleteDomainHandler);
 
   // ── Platform API Key Actions ──────────────────────────────────
