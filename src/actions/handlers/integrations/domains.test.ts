@@ -871,9 +871,12 @@ describe('platform.domains.regenerateVerification', () => {
     }
   });
 
-  it('throws FORBIDDEN when authz denies platform.domains.create permission', async () => {
-    // Reuses the create permission — a workspace owner with permission to
-    // register a domain has permission to regenerate its verification token.
+  it('throws FORBIDDEN when authz denies platform.domains.regenerateVerification permission', async () => {
+    // Modeled as its own permission key (not a re-use of
+    // platform.domains.create) so the gateway invariant
+    // `route.action_key === permission_key` holds without permission-
+    // lookup substitution. Both keys are catalog-derived for
+    // workspace_owner / super_admin so the effective grants are the same.
     const handler = createRegenerateVerificationHandler({
       authzClient: makeAuthzClient(false),
       dbClient: makeFakeDb({ selectRows: [makeDomainRow({ status: 'pending' })] }) as any,

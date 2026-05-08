@@ -490,7 +490,9 @@ export function createRegenerateVerificationHandler({
     const workspaceId = requireWorkspaceId(ctx);
     const resolvedAuthz = resolveAuthzClient(authzClient);
 
-    // Reuse the create permission — see contract note above.
+    // Gated by `platform.domains.regenerateVerification` — see the
+    // contract note above the factory for why this is a separate
+    // permission key (not a re-use of `platform.domains.create`).
     await requirePermission(resolvedAuthz, ctx, 'platform.domains.regenerateVerification');
 
     // Fetch domain — must belong to the requesting workspace
