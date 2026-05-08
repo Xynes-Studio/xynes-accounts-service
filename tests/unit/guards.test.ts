@@ -168,4 +168,53 @@ describe('requirePermission (PFU-1: actor-aware)', () => {
     await requirePermission(authzClient, makeApiKeyCtx(), 'platform.api_keys.list');
     expect(checkPermission).toHaveBeenCalledTimes(0);
   });
+
+  it('uses resolved user actor userId when ctx.userId is null (CodeRabbit fix)', async () => {
+    // Regression for PR #12 CodeRabbit Major: a context that carries
+    // `actor: { kind: 'user', userId }` but null `ctx.userId` must still
+    // authorise via the actor's userId, not 401 on the legacy
+    // `requireUserId(ctx)` fallback.
+    const passedUserIds: (string | null | undefined)[] = [];
+    const authzClient = {
+      checkPermission: async (req: { userId: string }) => {
+        passedUserIds.push(req.userId);
+        return true;
+      },
+      assignRole: async () => {},
+      listRolesForWorkspace: async () => [],
+    } as any;
+
+    const ctx: ActionContext = {
+      workspaceId: WORKSPACE_ID,
+      userId: null, // legacy mirror field deliberately not populated
+      requestId: 'req',
+      actor: { kind: 'user', userId: USER_ID },
+    };
+
+    await requirePermission(authzClient, ctx, 'platform.api_keys.list');
+    expect(passedUserIds).toEqual([USER_ID]);
+  });
+
+  it('falls back to ctx.userId when no actor is present (legacy callers)', async () => {
+    // Pre-PFU-1 callers that only set ctx.userId continue to work
+    // exactly as before — requireUserId is the fallback path.
+    const passedUserIds: (string | null | undefined)[] = [];
+    const authzClient = {
+      checkPermission: async (req: { userId: string }) => {
+        passedUserIds.push(req.userId);
+        return true;
+      },
+      assignRole: async () => {},
+      listRolesForWorkspace: async () => [],
+    } as any;
+
+    const ctx: ActionContext = {
+      workspaceId: WORKSPACE_ID,
+      userId: USER_ID,
+      requestId: 'req',
+    };
+
+    await requirePermission(authzClient, ctx, 'platform.api_keys.list');
+    expect(passedUserIds).toEqual([USER_ID]);
+  });
 });

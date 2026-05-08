@@ -126,7 +126,13 @@ export async function requirePermission(
     // check — there is no user identity to check against.
     return;
   }
-  const userId = requireUserId(ctx);
+  // Prefer the resolved user actor's userId so a context that carries
+  // `actor: { kind: 'user', userId }` but a null `ctx.userId` (e.g. a
+  // future caller that has migrated to the actor surface and stopped
+  // mirroring the legacy `userId` field) still authorises correctly.
+  // Falls back to `requireUserId(ctx)` which preserves the pre-PFU-1
+  // UNAUTHORIZED error semantics for legacy callers.
+  const userId = actor?.kind === 'user' ? actor.userId : requireUserId(ctx);
   const allowed = await authzClient.checkPermission({
     userId,
     workspaceId: ctx.workspaceId,

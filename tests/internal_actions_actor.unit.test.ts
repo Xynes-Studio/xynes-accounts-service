@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeAll } from 'bun:test';
+import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import app from '../src/app';
 import { INTERNAL_SERVICE_TOKEN } from './support/internal-auth';
 import { registerAccountsActions } from '../src/actions/register';
-import { registerAction } from '../src/actions/registry';
+import { registerAction, getActionHandler } from '../src/actions/registry';
 
 const WORKSPACE_ID = '550e8400-e29b-41d4-a716-446655440000';
 const USER_ID = '550e8400-e29b-41d4-a716-446655440001';
@@ -21,8 +21,15 @@ const API_KEY_PREFIX = 'a1b2c3d4';
 //     `ctx.userId` and `ctx.user`; new field `ctx.actor` is also populated.
 
 describe('Internal Accounts Actions — API-key actor recognition (PFU-1)', () => {
+  // Capture and restore the original `accounts.ping` handler so the
+  // ctx-capturing stub below does not bleed into other test files. The
+  // registry overwrites silently (see `src/actions/registry.ts`), so
+  // explicit teardown is required for hygiene.
+  let originalPingHandler: ReturnType<typeof getActionHandler>;
+
   beforeAll(() => {
     registerAccountsActions();
+    originalPingHandler = getActionHandler('accounts.ping');
 
     // Stub a workspace-scoped action that captures the resolved ctx so
     // tests can assert on what the handler saw.
@@ -36,6 +43,14 @@ describe('Internal Accounts Actions — API-key actor recognition (PFU-1)', () =
         },
       };
     });
+  });
+
+  afterAll(() => {
+    // Restore the real handler so cross-file test execution remains
+    // deterministic regardless of order.
+    if (originalPingHandler) {
+      registerAction('accounts.ping', originalPingHandler);
+    }
   });
 
   describe('Actor: api_key', () => {
