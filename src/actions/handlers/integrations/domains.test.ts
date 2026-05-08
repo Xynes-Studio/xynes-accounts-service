@@ -4,6 +4,7 @@ import {
   createListDomainsHandler,
   createCreateDomainHandler,
   createVerifyDomainHandler,
+  createRegenerateVerificationHandler,
   createDeleteDomainHandler,
 } from './domains';
 import type { ActionContext } from '../../types';
@@ -52,6 +53,7 @@ function makeDomainRow(overrides: Record<string, unknown> = {}) {
     updatedAt: NOW,
     failureCode: null,
     failureMessage: null,
+    dnsRecordsFound: null,
     ...overrides,
   };
 }
@@ -125,6 +127,19 @@ function makeDnsResolver(records: string[] | null) {
   return async (_name: string, _type: string) => {
     if (records === null) throw new Error('DNS lookup failed');
     return records;
+  };
+}
+
+/**
+ * Resolver that throws an error with a specific .code property — used to
+ * exercise the DNS error categorization (NXDOMAIN / TIMEOUT / DNS_ERROR).
+ */
+function makeDnsResolverWithCode(code: string, message = 'simulated DNS error') {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  return async (_name: string, _type: string) => {
+    const err = new Error(message) as Error & { code: string };
+    err.code = code;
+    throw err;
   };
 }
 
@@ -372,6 +387,96 @@ describe('platform.domains.create', () => {
       expect((err as DomainError).code).toBe('CONFLICT');
     }
   });
+
+  it('returns INVALID_DOMAIN 400 when the DB raises a CHECK violation (defense-in-depth)', async () => {
+    // The frontend validator already mirrors every shape rule, so under
+    // normal operation this path is never hit. But if the validator
+    // drifts from the schema (or a future constraint is added without a
+    // matching validator change), users must still see a safe 400 — not
+    // a generic 500 with the failed insert leaking into error logs.
+    const db = makeFakeDb({
+      insertSpy: () => {
+        const error = new Error('check violation') as Error & {
+          code: string;
+          constraint_name: string;
+        };
+        error.code = '23514';
+        error.constraint_name = 'workspace_domains_hostname_shape';
+        throw error;
+      },
+    });
+    const handler = createCreateDomainHandler({
+      authzClient: makeAuthzClient(),
+      dbClient: db as any,
+    });
+    await expect(handler({ hostname: 'something.com' }, makeCtx())).rejects.toThrow(DomainError);
+    try {
+      await handler({ hostname: 'something.com' }, makeCtx());
+    } catch (err) {
+      const domainErr = err as DomainError;
+      expect(domainErr.code).toBe('INVALID_DOMAIN');
+      expect(domainErr.statusCode).toBe(400);
+      // Message must NOT include the raw constraint_name or any internal
+      // details — only a user-friendly hostname-shape message.
+      expect(domainErr.message).toContain('something.com');
+      expect(domainErr.message.toLowerCase()).toContain('shape');
+      expect(domainErr.message).not.toContain('23514');
+      expect(domainErr.message).not.toContain('workspace_domains_hostname_shape');
+    }
+  });
+
+  it('returns INVALID_DOMAIN with a lowercase-specific message for the lower CHECK', async () => {
+    const db = makeFakeDb({
+      insertSpy: () => {
+        const error = new Error('check violation') as Error & {
+          code: string;
+          constraint_name: string;
+        };
+        error.code = '23514';
+        error.constraint_name = 'workspace_domains_hostname_lower';
+        throw error;
+      },
+    });
+    const handler = createCreateDomainHandler({
+      authzClient: makeAuthzClient(),
+      dbClient: db as any,
+    });
+    try {
+      await handler({ hostname: 'something.com' }, makeCtx());
+    } catch (err) {
+      const domainErr = err as DomainError;
+      expect(domainErr.code).toBe('INVALID_DOMAIN');
+      expect(domainErr.statusCode).toBe(400);
+      expect(domainErr.message.toLowerCase()).toContain('lowercase');
+    }
+  });
+
+  it('returns INVALID_DOMAIN with a generic shape message for unknown CHECK constraints', async () => {
+    // Future-proofing: if a new CHECK is added on workspace_domains
+    // without a matching message mapping, the handler must still return
+    // a safe 400 (with the generic shape copy) rather than re-throwing
+    // and triggering the global 500 path.
+    const db = makeFakeDb({
+      insertSpy: () => {
+        const error = new Error('check violation') as Error & { code: string };
+        error.code = '23514';
+        // no constraint_name — exercises the `default` branch
+        throw error;
+      },
+    });
+    const handler = createCreateDomainHandler({
+      authzClient: makeAuthzClient(),
+      dbClient: db as any,
+    });
+    try {
+      await handler({ hostname: 'something.com' }, makeCtx());
+    } catch (err) {
+      const domainErr = err as DomainError;
+      expect(domainErr.code).toBe('INVALID_DOMAIN');
+      expect(domainErr.statusCode).toBe(400);
+      expect(domainErr.message).toContain('something.com');
+    }
+  });
 });
 
 // ═════════════════════════════════════════════════════════════════
@@ -491,7 +596,10 @@ describe('platform.domains.verify', () => {
     expect(updatedValues).not.toBeNull();
     expect(updatedValues!.status).toBe('failed');
     expect(updatedValues!.lastCheckedAt).toBeDefined();
-    expect(updatedValues!.failureCode).toBe('DNS_MISMATCH');
+    // Phase B: distinguish "found N records, none matched" (MISMATCH)
+    // from "found 0 records" (NO_RECORDS).
+    expect(updatedValues!.failureCode).toBe('MISMATCH');
+    expect(updatedValues!.dnsRecordsFound).toBe(1);
   });
 
   it('updates status to failed when DNS lookup errors', async () => {
@@ -508,11 +616,14 @@ describe('platform.domains.verify', () => {
     const handler = createVerifyDomainHandler({
       authzClient: makeAuthzClient(),
       dbClient: db as any,
-      dnsResolver: makeDnsResolver(null), // throws
+      dnsResolver: makeDnsResolver(null), // throws (no .code → DNS_ERROR)
     });
     const result = await handler({ domainId: DOMAIN_ID }, makeCtx());
     expect(result.status).toBe('failed');
     expect(updatedValues!.failureCode).toBe('DNS_ERROR');
+    // dns_records_found is null when DNS lookup itself errored — we never
+    // got far enough to enumerate records.
+    expect(updatedValues!.dnsRecordsFound).toBeNull();
   });
 
   it('does not leak raw DNS error details in the failure message', async () => {
@@ -552,6 +663,365 @@ describe('platform.domains.verify', () => {
     });
     await handler({ domainId: DOMAIN_ID }, makeCtx());
     expect(updatedValues!.lastCheckedAt).toBeDefined();
+  });
+
+  // ── Phase B: structured DNS failure diagnostics ─────────────────
+
+  it('classifies ENOTFOUND as NXDOMAIN with a propagation hint', async () => {
+    const row = makeDomainRow({ status: 'pending' });
+    let updatedValues: Record<string, unknown> | null = null;
+    const handler = createVerifyDomainHandler({
+      authzClient: makeAuthzClient(),
+      dbClient: makeFakeDb({
+        selectRows: [row],
+        updateSpy: (v) => {
+          updatedValues = v;
+        },
+      }) as any,
+      dnsResolver: makeDnsResolverWithCode('ENOTFOUND'),
+    });
+    const result = await handler({ domainId: DOMAIN_ID }, makeCtx());
+    expect(result.status).toBe('failed');
+    expect(result.failureCode).toBe('NXDOMAIN');
+    expect(result.dnsRecordsFound).toBeNull();
+    expect(updatedValues!.failureCode).toBe('NXDOMAIN');
+    expect(updatedValues!.dnsRecordsFound).toBeNull();
+    expect(result.failureMessage?.toLowerCase()).toContain('propagation');
+  });
+
+  it('classifies ENODATA as NXDOMAIN', async () => {
+    const row = makeDomainRow({ status: 'pending' });
+    const handler = createVerifyDomainHandler({
+      authzClient: makeAuthzClient(),
+      dbClient: makeFakeDb({ selectRows: [row] }) as any,
+      dnsResolver: makeDnsResolverWithCode('ENODATA'),
+    });
+    const result = await handler({ domainId: DOMAIN_ID }, makeCtx());
+    expect(result.failureCode).toBe('NXDOMAIN');
+  });
+
+  it('classifies ETIMEOUT as TIMEOUT with a transient-failure hint', async () => {
+    const row = makeDomainRow({ status: 'pending' });
+    const handler = createVerifyDomainHandler({
+      authzClient: makeAuthzClient(),
+      dbClient: makeFakeDb({ selectRows: [row] }) as any,
+      dnsResolver: makeDnsResolverWithCode('ETIMEOUT'),
+    });
+    const result = await handler({ domainId: DOMAIN_ID }, makeCtx());
+    expect(result.failureCode).toBe('TIMEOUT');
+    expect(result.dnsRecordsFound).toBeNull();
+    expect(result.failureMessage?.toLowerCase()).toContain('timed out');
+  });
+
+  it('classifies ESERVFAIL and EREFUSED as TIMEOUT', async () => {
+    const row = makeDomainRow({ status: 'pending' });
+    for (const code of ['ESERVFAIL', 'EREFUSED']) {
+      const handler = createVerifyDomainHandler({
+        authzClient: makeAuthzClient(),
+        dbClient: makeFakeDb({ selectRows: [row] }) as any,
+        dnsResolver: makeDnsResolverWithCode(code),
+      });
+      const result = await handler({ domainId: DOMAIN_ID }, makeCtx());
+      expect(result.failureCode).toBe('TIMEOUT');
+    }
+  });
+
+  it('classifies an unknown DNS error code as DNS_ERROR', async () => {
+    const row = makeDomainRow({ status: 'pending' });
+    const handler = createVerifyDomainHandler({
+      authzClient: makeAuthzClient(),
+      dbClient: makeFakeDb({ selectRows: [row] }) as any,
+      dnsResolver: makeDnsResolverWithCode('EUNKNOWN_NEW_CODE'),
+    });
+    const result = await handler({ domainId: DOMAIN_ID }, makeCtx());
+    expect(result.failureCode).toBe('DNS_ERROR');
+    expect(result.dnsRecordsFound).toBeNull();
+  });
+
+  it('classifies a successful lookup with zero records as NO_RECORDS', async () => {
+    const row = makeDomainRow({ status: 'pending' });
+    let updatedValues: Record<string, unknown> | null = null;
+    const handler = createVerifyDomainHandler({
+      authzClient: makeAuthzClient(),
+      dbClient: makeFakeDb({
+        selectRows: [row],
+        updateSpy: (v) => {
+          updatedValues = v;
+        },
+      }) as any,
+      dnsResolver: makeDnsResolver([]), // success, but empty
+    });
+    const result = await handler({ domainId: DOMAIN_ID }, makeCtx());
+    expect(result.failureCode).toBe('NO_RECORDS');
+    // Successful DNS lookup with empty array → count is 0 (not null).
+    expect(result.dnsRecordsFound).toBe(0);
+    expect(updatedValues!.dnsRecordsFound).toBe(0);
+  });
+
+  it('reports the actual TXT record count on a MISMATCH (multi-record case)', async () => {
+    const row = makeDomainRow({
+      status: 'pending',
+      verificationValueHash: 'expected-hash-that-wont-match-anything',
+    });
+    let updatedValues: Record<string, unknown> | null = null;
+    const handler = createVerifyDomainHandler({
+      authzClient: makeAuthzClient(),
+      dbClient: makeFakeDb({
+        selectRows: [row],
+        updateSpy: (v) => {
+          updatedValues = v;
+        },
+      }) as any,
+      dnsResolver: makeDnsResolver(['record-a', 'record-b', 'record-c']),
+    });
+    const result = await handler({ domainId: DOMAIN_ID }, makeCtx());
+    expect(result.failureCode).toBe('MISMATCH');
+    expect(result.dnsRecordsFound).toBe(3);
+    expect(updatedValues!.dnsRecordsFound).toBe(3);
+    // The user-facing message should mention the count without echoing
+    // the raw record values back.
+    expect(result.failureMessage).toContain('3 TXT records');
+    expect(result.failureMessage).not.toContain('record-a');
+    expect(result.failureMessage).not.toContain('record-b');
+  });
+
+  it('returns dnsRecordsFound = null on the verified happy path', async () => {
+    // dnsRecordsFound only carries failure-diagnostic information; on a
+    // successful verify the FE doesn't render the diagnostic strip, so
+    // the verify handler updates the column to the actual count for
+    // audit (the resolver returned at least 1 record), but the `success`
+    // path in the DTO has dnsRecordsFound set to the count for symmetry.
+    const rawValue = 'xynes-verify-test-success';
+    const hashedValue = await hashForTest(rawValue);
+    const row = makeDomainRow({
+      status: 'pending',
+      verificationValueHash: hashedValue,
+    });
+    let updatedValues: Record<string, unknown> | null = null;
+    const handler = createVerifyDomainHandler({
+      authzClient: makeAuthzClient(),
+      dbClient: makeFakeDb({
+        selectRows: [row],
+        updateSpy: (v) => {
+          updatedValues = v;
+        },
+      }) as any,
+      dnsResolver: makeDnsResolver([rawValue]),
+    });
+    const result = await handler({ domainId: DOMAIN_ID }, makeCtx());
+    expect(result.status).toBe('verified');
+    expect(result.failureCode).toBeNull();
+    // The count is still recorded on success — this is symmetry, not
+    // leakage. The number 1 is harmless; what matters is the contract
+    // that no raw record values ever flow to the DTO.
+    expect(updatedValues!.dnsRecordsFound).toBe(1);
+  });
+
+  it('never echoes raw TXT record values back to the caller', async () => {
+    // Defense-in-depth: even if a future bug made the failure_message
+    // include record values, this test catches it. The records here are
+    // crafted to look like attacker-supplied content.
+    const row = makeDomainRow({
+      status: 'pending',
+      verificationValueHash: 'expected-hash',
+    });
+    const malicious = '<script>alert(1)</script>';
+    const handler = createVerifyDomainHandler({
+      authzClient: makeAuthzClient(),
+      dbClient: makeFakeDb({ selectRows: [row] }) as any,
+      dnsResolver: makeDnsResolver([malicious, 'totally-legitimate-other-record']),
+    });
+    const result = await handler({ domainId: DOMAIN_ID }, makeCtx());
+    const serialised = JSON.stringify(result);
+    expect(serialised).not.toContain(malicious);
+    expect(serialised).not.toContain('totally-legitimate-other-record');
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════
+// platform.domains.regenerateVerification
+// ═════════════════════════════════════════════════════════════════
+
+describe('platform.domains.regenerateVerification', () => {
+  it('throws UNAUTHORIZED when userId is missing', async () => {
+    const handler = createRegenerateVerificationHandler({
+      authzClient: makeAuthzClient(),
+    });
+    await expect(handler({ domainId: DOMAIN_ID }, makeCtx({ userId: null }))).rejects.toThrow(
+      DomainError,
+    );
+    try {
+      await handler({ domainId: DOMAIN_ID }, makeCtx({ userId: null }));
+    } catch (err) {
+      expect((err as DomainError).code).toBe('UNAUTHORIZED');
+    }
+  });
+
+  it('throws MISSING_CONTEXT when workspaceId is missing', async () => {
+    const handler = createRegenerateVerificationHandler({
+      authzClient: makeAuthzClient(),
+    });
+    await expect(handler({ domainId: DOMAIN_ID }, makeCtx({ workspaceId: null }))).rejects.toThrow(
+      DomainError,
+    );
+    try {
+      await handler({ domainId: DOMAIN_ID }, makeCtx({ workspaceId: null }));
+    } catch (err) {
+      expect((err as DomainError).code).toBe('MISSING_CONTEXT');
+    }
+  });
+
+  it('throws FORBIDDEN when authz denies platform.domains.regenerateVerification permission', async () => {
+    // Modeled as its own permission key (not a re-use of
+    // platform.domains.create) so the gateway invariant
+    // `route.action_key === permission_key` holds without permission-
+    // lookup substitution. Both keys are catalog-derived for
+    // workspace_owner / super_admin so the effective grants are the same.
+    const handler = createRegenerateVerificationHandler({
+      authzClient: makeAuthzClient(false),
+      dbClient: makeFakeDb({ selectRows: [makeDomainRow({ status: 'pending' })] }) as any,
+    });
+    await expect(handler({ domainId: DOMAIN_ID }, makeCtx())).rejects.toThrow(DomainError);
+    try {
+      await handler({ domainId: DOMAIN_ID }, makeCtx());
+    } catch (err) {
+      expect((err as DomainError).code).toBe('FORBIDDEN');
+    }
+  });
+
+  it('throws NOT_FOUND when domain does not exist', async () => {
+    const handler = createRegenerateVerificationHandler({
+      authzClient: makeAuthzClient(),
+      dbClient: makeFakeDb({ selectRows: [] }) as any,
+    });
+    await expect(handler({ domainId: DOMAIN_ID }, makeCtx())).rejects.toThrow(DomainError);
+    try {
+      await handler({ domainId: DOMAIN_ID }, makeCtx());
+    } catch (err) {
+      expect((err as DomainError).code).toBe('NOT_FOUND');
+    }
+  });
+
+  it('reissues the verification token for a pending domain', async () => {
+    const row = makeDomainRow({
+      status: 'pending',
+      verificationValueHash: 'old-hash',
+    });
+    const db = makeFakeDb({ selectRows: [row] });
+    const handler = createRegenerateVerificationHandler({
+      authzClient: makeAuthzClient(),
+      dbClient: db as any,
+    });
+
+    const result = await handler({ domainId: DOMAIN_ID }, makeCtx());
+
+    expect(result.id).toBe(DOMAIN_ID);
+    expect(result.status).toBe('pending');
+    // The new verification value is returned exactly once — the panel
+    // surfaces it via the same one-time reveal slot as create.
+    expect(result.verificationValue).toBeDefined();
+    expect(result.verificationValue.length).toBeGreaterThan(0);
+    expect(result.verificationValue.startsWith('xynes-verify-')).toBe(true);
+
+    // The DB UPDATE swapped the hash — and the new hash is NOT the old one.
+    const updated = db._getUpdated()!;
+    expect(updated.verificationValueHash).toBeDefined();
+    expect(updated.verificationValueHash).not.toBe('old-hash');
+    // Failure / last-checked state is reset.
+    expect(updated.failureCode).toBeNull();
+    expect(updated.failureMessage).toBeNull();
+    expect(updated.lastCheckedAt).toBeNull();
+    expect(updated.status).toBe('pending');
+  });
+
+  it('reissues for a failed domain (recovery from a failed verify attempt)', async () => {
+    const row = makeDomainRow({
+      status: 'failed',
+      failureCode: 'MISMATCH',
+      failureMessage: 'Found 1 TXT record at the verification name, but its value did not match.',
+      verificationValueHash: 'old-hash',
+      dnsRecordsFound: 1,
+    });
+    const db = makeFakeDb({ selectRows: [row] });
+    const handler = createRegenerateVerificationHandler({
+      authzClient: makeAuthzClient(),
+      dbClient: db as any,
+    });
+
+    const result = await handler({ domainId: DOMAIN_ID }, makeCtx());
+
+    expect(result.status).toBe('pending');
+    expect(result.failureCode).toBeNull();
+    expect(result.failureMessage).toBeNull();
+    expect(result.lastCheckedAt).toBeNull();
+    // dns_records_found applied to the previous (now-superseded) secret;
+    // it must be reset so the FE diagnostic strip shows the
+    // "no verify attempt yet" state for the freshly-issued token.
+    expect(result.dnsRecordsFound).toBeNull();
+
+    const updated = db._getUpdated()!;
+    expect(updated.status).toBe('pending');
+    expect(updated.verificationValueHash).not.toBe('old-hash');
+    expect(updated.dnsRecordsFound).toBeNull();
+  });
+
+  it('refuses to regenerate for a verified domain (409 CONFLICT)', async () => {
+    // Regenerating a verified domain would silently revoke verification —
+    // we require an explicit disable + re-add cycle for that workflow.
+    const row = makeDomainRow({
+      status: 'verified',
+      verifiedAt: NOW,
+    });
+    const handler = createRegenerateVerificationHandler({
+      authzClient: makeAuthzClient(),
+      dbClient: makeFakeDb({ selectRows: [row] }) as any,
+    });
+    try {
+      await handler({ domainId: DOMAIN_ID }, makeCtx());
+      throw new Error('expected the handler to throw');
+    } catch (err) {
+      const domainErr = err as DomainError;
+      expect(domainErr.code).toBe('CONFLICT');
+      expect(domainErr.statusCode).toBe(409);
+      expect(domainErr.message).toContain('verified');
+    }
+  });
+
+  it('refuses to regenerate for a disabled domain (409 CONFLICT)', async () => {
+    const row = makeDomainRow({ status: 'disabled' });
+    const handler = createRegenerateVerificationHandler({
+      authzClient: makeAuthzClient(),
+      dbClient: makeFakeDb({ selectRows: [row] }) as any,
+    });
+    try {
+      await handler({ domainId: DOMAIN_ID }, makeCtx());
+      throw new Error('expected the handler to throw');
+    } catch (err) {
+      const domainErr = err as DomainError;
+      expect(domainErr.code).toBe('CONFLICT');
+      expect(domainErr.statusCode).toBe(409);
+      expect(domainErr.message).toContain('disabled');
+    }
+  });
+
+  it('does not leak the new hash, raw value, or the previous hash in the DTO', async () => {
+    // Security invariant: the DTO returned to the gateway must never
+    // include verificationValueHash. The raw value lives only on the
+    // explicit `verificationValue` extension field.
+    const row = makeDomainRow({
+      status: 'pending',
+      verificationValueHash: 'old-hash-must-not-leak',
+    });
+    const handler = createRegenerateVerificationHandler({
+      authzClient: makeAuthzClient(),
+      dbClient: makeFakeDb({ selectRows: [row] }) as any,
+    });
+
+    const result = await handler({ domainId: DOMAIN_ID }, makeCtx());
+    const serialised = JSON.stringify(result);
+    expect(serialised).not.toContain('old-hash-must-not-leak');
+    expect(serialised).not.toContain('verificationValueHash');
+    expect(serialised).not.toContain('verification_value_hash');
   });
 });
 

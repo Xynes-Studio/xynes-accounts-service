@@ -29,6 +29,7 @@ import {
   platformDomainsListPayloadSchema,
   platformDomainsCreatePayloadSchema,
   platformDomainsVerifyPayloadSchema,
+  platformDomainsRegenerateVerificationPayloadSchema,
   platformDomainsDeletePayloadSchema,
   platformApiKeysListPayloadSchema,
   platformApiKeysCreatePayloadSchema,
@@ -181,6 +182,9 @@ internalRoute.post('/accounts-actions', async (c) => {
       case 'platform.domains.verify':
         validatedPayload = platformDomainsVerifyPayloadSchema.parse(rawPayload);
         break;
+      case 'platform.domains.regenerateVerification':
+        validatedPayload = platformDomainsRegenerateVerificationPayloadSchema.parse(rawPayload);
+        break;
       case 'platform.domains.delete':
         validatedPayload = platformDomainsDeletePayloadSchema.parse(rawPayload);
         break;
@@ -207,6 +211,7 @@ internalRoute.post('/accounts-actions', async (c) => {
       key === 'accounts.invites.create' ||
       key === 'accounts.invites.accept' ||
       key === 'platform.domains.create' ||
+      key === 'platform.domains.regenerateVerification' ||
       key === 'platform.api_keys.create'
         ? 201
         : 200;

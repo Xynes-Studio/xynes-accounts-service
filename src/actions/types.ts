@@ -14,6 +14,7 @@ export type AccountsActionKey =
   | 'platform.domains.list'
   | 'platform.domains.create'
   | 'platform.domains.verify'
+  | 'platform.domains.regenerateVerification'
   | 'platform.domains.delete'
   | 'platform.api_keys.list'
   | 'platform.api_keys.create'

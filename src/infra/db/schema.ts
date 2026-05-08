@@ -1,4 +1,4 @@
-import { pgSchema, uuid, text, timestamp, primaryKey } from 'drizzle-orm/pg-core';
+import { pgSchema, uuid, text, timestamp, primaryKey, integer } from 'drizzle-orm/pg-core';
 
 export const identitySchema = pgSchema('identity');
 export const platformSchema = pgSchema('platform');
@@ -64,6 +64,9 @@ export const workspaceDomains = platformSchema.table('workspace_domains', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   failureCode: text('failure_code'),
   failureMessage: text('failure_message'),
+  // Phase B (workspace-domain-verification-ux): count-only diagnostic
+  // populated by the verify handler. NEVER stores raw TXT record values.
+  dnsRecordsFound: integer('dns_records_found'),
 });
 
 export const workspaceApiKeys = platformSchema.table('workspace_api_keys', {
