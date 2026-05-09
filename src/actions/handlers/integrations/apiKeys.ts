@@ -24,6 +24,14 @@ import {
  * Each preset defines a curated set of action keys that an API key
  * created with that preset will be allowed to invoke.
  *
+ * **Cross-package contract (PFU-6):** the *keys* of this object are the
+ * canonical workspace API key preset keys. The canonical list is owned by
+ * `@xynes/platform-contracts` (see
+ * `xynes/xynes-platform-contracts/src/integrations/api-key-presets.ts`,
+ * `WORKSPACE_API_KEY_PRESET_KEYS`). The preset → scope *mapping* itself is
+ * intentionally server-only because it encodes authz wiring; only the key
+ * set is shared. `apiKeyPresets.contract.test.ts` asserts parity.
+ *
  * Security note: `workspace_admin` intentionally excludes
  * `platform.api_keys.create` and `platform.api_keys.revoke`
  * to prevent privilege escalation via API key self-management.

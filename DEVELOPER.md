@@ -373,6 +373,11 @@ Workspace API key lifecycle handlers (CRUD + usage read) with built-in RBAC and 
 
 > **Security:** `workspace_admin` intentionally excludes `platform.api_keys.create` and `platform.api_keys.revoke` to prevent privilege escalation via API key self-management.
 
+> **Cross-package contract (PFU-6):** the *keys* of `WORKSPACE_API_KEY_PRESETS` are the canonical workspace API key preset keys. The canonical list is owned by `@xynes/platform-contracts` (`WORKSPACE_API_KEY_PRESET_KEYS` in `xynes/xynes-platform-contracts/src/integrations/api-key-presets.ts`). The preset → scope *mapping* itself is intentionally server-only because it encodes authz wiring; only the key set is shared. Parity is enforced by `apiKeyPresets.contract.test.ts`. Adding a new preset:
+> 1. Append the key to `WORKSPACE_API_KEY_PRESET_KEYS` in `@xynes/platform-contracts`.
+> 2. Add the preset → scope mapping in this service's `WORKSPACE_API_KEY_PRESETS`.
+> 3. Mirror the new key in each consumer's local copy (the contract tests will fail until you do).
+
 **Test coverage:** `apiKeys.ts` — 100% functions, 99.51% lines (37 unit tests).
 
 ### Shared Action Guards (`guards.ts`)
