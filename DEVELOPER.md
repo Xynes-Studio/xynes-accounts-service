@@ -138,6 +138,9 @@ All behaviour is exposed via the internal “actions” endpoint.
 
 	- Requires `X-XS-User-Id` and `X-Workspace-Id`
 	- Performs RBAC via authz `POST /authz/check` for `accounts.invites.create`
+	- **BUG-AUTH-8 guards (run BEFORE token generation + invite insert):**
+		- `SELF_INVITE` (HTTP 400, `DomainError.code = 'SELF_INVITE'`): rejects when the normalized invitee email matches the actor's own email. Prefer `ctx.user.email` (set by the gateway from the user JWT) and fall back to an `identity.users` lookup by `ctx.userId` when the gateway did not propagate the email.
+		- `ALREADY_MEMBER` (HTTP 400, `DomainError.code = 'ALREADY_MEMBER'`): rejects when the invited address already has an `active` membership in this workspace. Resolved by a single workspace-scoped inner join of `platform.workspace_members` against `identity.users.email`. The error message NEVER leaks the existing member's userId / email / displayName.
 	- Generates a cryptographically-random invite token and stores only a one-way hash in DB
 	- The raw `token` is returned **once** to the caller (for sharing with the invitee)
 
