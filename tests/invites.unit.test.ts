@@ -21,6 +21,18 @@ describe('Workspace invites (unit, DI)', () => {
     const inserted: any[] = [];
 
     const dbClient: any = {
+      // BUG-AUTH-8: the create handler now runs an ALREADY_MEMBER pre-check
+      // that joins workspace_members on users.email. Return an empty
+      // membership list for the happy path so the insert still fires.
+      select: () => ({
+        from: () => ({
+          innerJoin: () => ({
+            where: () => ({
+              limit: async () => [],
+            }),
+          }),
+        }),
+      }),
       insert: (table: any) => ({
         values: async (row: any) => {
           expect(table).toBe(workspaceInvites);
@@ -51,7 +63,9 @@ describe('Workspace invites (unit, DI)', () => {
     });
 
     const result = await handler(
-      { email: 'USER@EXAMPLE.COM', roleKey: 'workspace_member' },
+      // BUG-AUTH-8: use an address different from authedCtx.user.email so the
+      // SELF_INVITE guard does not fire on the happy path.
+      { email: 'COLLEAGUE@EXAMPLE.COM', roleKey: 'workspace_member' },
       authedCtx as any,
     );
 
@@ -59,7 +73,7 @@ describe('Workspace invites (unit, DI)', () => {
       expect.objectContaining({
         id: 'invite-1',
         workspaceId: authedCtx.workspaceId,
-        email: 'user@example.com',
+        email: 'colleague@example.com',
         roleKey: 'workspace_member',
         status: 'pending',
         token: 'raw-token',
@@ -69,7 +83,7 @@ describe('Workspace invites (unit, DI)', () => {
     expect(inserted[0]).toMatchObject({
       id: 'invite-1',
       workspaceId: authedCtx.workspaceId,
-      email: 'user@example.com',
+      email: 'colleague@example.com',
       roleKey: 'workspace_member',
       invitedBy: authedCtx.userId,
       token: 'hashed-token',
@@ -94,6 +108,190 @@ describe('Workspace invites (unit, DI)', () => {
     await expect(
       handler({ email: 'user@example.com', roleKey: 'workspace_member' }, authedCtx as any),
     ).rejects.toBeInstanceOf(DomainError);
+  });
+
+  // ── BUG-AUTH-8: SELF_INVITE + ALREADY_MEMBER guards ────────────────
+
+  it('create rejects SELF_INVITE when invitee email matches ctx.user.email (case-insensitive)', async () => {
+    const dbClient: any = {
+      insert: () => ({
+        values: async () => {
+          throw new Error('should not insert on SELF_INVITE');
+        },
+      }),
+      select: () => ({
+        from: () => ({
+          innerJoin: () => ({
+            where: () => ({
+              limit: async () => {
+                throw new Error('SELF_INVITE must fire before membership check');
+              },
+            }),
+          }),
+        }),
+      }),
+    };
+    const authzClient: any = { checkPermission: async () => true };
+
+    const handler = createCreateWorkspaceInviteHandler({ dbClient, authzClient });
+
+    let caught: unknown;
+    try {
+      await handler({ email: 'USER@EXAMPLE.COM', roleKey: 'workspace_member' }, authedCtx as any);
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(DomainError);
+    const domain = caught as DomainError;
+    expect(domain.code).toBe('SELF_INVITE');
+    expect(domain.statusCode).toBe(400);
+  });
+
+  it('create rejects SELF_INVITE via users-table fallback when ctx.user.email is missing', async () => {
+    // Simulate gateway not propagating ctx.user.email — handler must look up
+    // identity.users by ctx.userId and still detect the self-invite.
+    let usersLookupCount = 0;
+    const dbClient: any = {
+      insert: () => ({
+        values: async () => {
+          throw new Error('should not insert on SELF_INVITE');
+        },
+      }),
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: async () => {
+              usersLookupCount += 1;
+              return [{ email: 'fallback@example.com' }];
+            },
+          }),
+          // Membership-check fallback (won't be reached on SELF_INVITE)
+          innerJoin: () => ({
+            where: () => ({
+              limit: async () => {
+                throw new Error('membership check must not run when SELF_INVITE fires');
+              },
+            }),
+          }),
+        }),
+      }),
+    };
+    const authzClient: any = { checkPermission: async () => true };
+
+    const ctxWithoutUserEmail = {
+      ...authedCtx,
+      user: undefined,
+    };
+
+    const handler = createCreateWorkspaceInviteHandler({ dbClient, authzClient });
+    let caught: unknown;
+    try {
+      await handler(
+        { email: 'FALLBACK@example.com', roleKey: 'workspace_member' },
+        ctxWithoutUserEmail as any,
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(DomainError);
+    expect((caught as DomainError).code).toBe('SELF_INVITE');
+    expect(usersLookupCount).toBe(1);
+  });
+
+  it('create rejects ALREADY_MEMBER when invitee already has an active membership', async () => {
+    const dbClient: any = {
+      insert: () => ({
+        values: async () => {
+          throw new Error('should not insert on ALREADY_MEMBER');
+        },
+      }),
+      select: () => ({
+        from: () => ({
+          innerJoin: () => ({
+            where: () => ({
+              limit: async () => [
+                // Only the userId is selected; never leak email/displayName.
+                { userId: 'existing-member-user-id' },
+              ],
+            }),
+          }),
+        }),
+      }),
+    };
+    const authzClient: any = { checkPermission: async () => true };
+
+    const handler = createCreateWorkspaceInviteHandler({ dbClient, authzClient });
+    let caught: unknown;
+    try {
+      await handler(
+        { email: 'colleague@example.com', roleKey: 'workspace_member' },
+        authedCtx as any,
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(DomainError);
+    const domain = caught as DomainError;
+    expect(domain.code).toBe('ALREADY_MEMBER');
+    expect(domain.statusCode).toBe(400);
+    // Defense in depth: error message must not leak the existing member's userId.
+    expect(domain.message).not.toContain('existing-member-user-id');
+  });
+
+  it('create ALREADY_MEMBER guard compares emails case-insensitively (lower(users.email))', async () => {
+    // Codex P2 (PR #14): identity.users.email is stored as received from
+    // the Supabase JWT, so an existing user row could legitimately hold
+    // a mixed-case email like User@Example.com. The fix pushes a
+    // lower(users.email) expression into the WHERE clause; this test
+    // captures the .where() argument, renders it through Drizzle's
+    // PgDialect, and asserts (1) lower(...email...) appears in the SQL,
+    // (2) the bind value is the lowercased invitee email, and (3) the
+    // un-normalised email is NEVER interpolated as a SQL literal.
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const dialect = new PgDialect();
+
+    let capturedWhere: unknown;
+    const dbClient: any = {
+      insert: () => ({
+        values: async () => {
+          throw new Error('should not insert');
+        },
+      }),
+      select: () => ({
+        from: () => ({
+          innerJoin: () => ({
+            where: (whereExpr: unknown) => {
+              capturedWhere = whereExpr;
+              return {
+                limit: async () => [{ userId: 'existing-member-user-id' }],
+              };
+            },
+          }),
+        }),
+      }),
+    };
+    const authzClient: any = { checkPermission: async () => true };
+
+    const handler = createCreateWorkspaceInviteHandler({ dbClient, authzClient });
+    try {
+      // Distinct from authedCtx.user.email so the SELF_INVITE guard does NOT
+      // fire — we want the ALREADY_MEMBER pre-check to run and capture the
+      // WHERE expression.
+      await handler(
+        { email: 'Colleague@Example.COM', roleKey: 'workspace_member' },
+        authedCtx as any,
+      );
+    } catch {
+      // ALREADY_MEMBER throw is expected; we only need the WHERE shape.
+    }
+
+    expect(capturedWhere).toBeDefined();
+    const rendered = dialect.sqlToQuery((capturedWhere as any).getSQL());
+    expect(rendered.sql).toContain('lower("identity"."users"."email")');
+    expect(rendered.params).toContain('colleague@example.com');
+    expect(rendered.sql).not.toContain('Colleague@Example.COM');
+    expect(rendered.sql).not.toContain('colleague@example.com');
   });
 
   it('resolve marks pending invites as expired when past expiresAt', async () => {
