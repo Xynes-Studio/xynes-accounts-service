@@ -239,6 +239,61 @@ describe('Workspace invites (unit, DI)', () => {
     expect(domain.message).not.toContain('existing-member-user-id');
   });
 
+  it('create ALREADY_MEMBER guard compares emails case-insensitively (lower(users.email))', async () => {
+    // Codex P2 (PR #14): identity.users.email is stored as received from
+    // the Supabase JWT, so an existing user row could legitimately hold
+    // a mixed-case email like User@Example.com. The fix pushes a
+    // lower(users.email) expression into the WHERE clause; this test
+    // captures the .where() argument, renders it through Drizzle's
+    // PgDialect, and asserts (1) lower(...email...) appears in the SQL,
+    // (2) the bind value is the lowercased invitee email, and (3) the
+    // un-normalised email is NEVER interpolated as a SQL literal.
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const dialect = new PgDialect();
+
+    let capturedWhere: unknown;
+    const dbClient: any = {
+      insert: () => ({
+        values: async () => {
+          throw new Error('should not insert');
+        },
+      }),
+      select: () => ({
+        from: () => ({
+          innerJoin: () => ({
+            where: (whereExpr: unknown) => {
+              capturedWhere = whereExpr;
+              return {
+                limit: async () => [{ userId: 'existing-member-user-id' }],
+              };
+            },
+          }),
+        }),
+      }),
+    };
+    const authzClient: any = { checkPermission: async () => true };
+
+    const handler = createCreateWorkspaceInviteHandler({ dbClient, authzClient });
+    try {
+      // Distinct from authedCtx.user.email so the SELF_INVITE guard does NOT
+      // fire — we want the ALREADY_MEMBER pre-check to run and capture the
+      // WHERE expression.
+      await handler(
+        { email: 'Colleague@Example.COM', roleKey: 'workspace_member' },
+        authedCtx as any,
+      );
+    } catch {
+      // ALREADY_MEMBER throw is expected; we only need the WHERE shape.
+    }
+
+    expect(capturedWhere).toBeDefined();
+    const rendered = dialect.sqlToQuery((capturedWhere as any).getSQL());
+    expect(rendered.sql).toContain('lower("identity"."users"."email")');
+    expect(rendered.params).toContain('colleague@example.com');
+    expect(rendered.sql).not.toContain('Colleague@Example.COM');
+    expect(rendered.sql).not.toContain('colleague@example.com');
+  });
+
   it('resolve marks pending invites as expired when past expiresAt', async () => {
     const selectRow = {
       id: 'invite-1',

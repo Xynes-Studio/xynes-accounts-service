@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { DomainError } from '@xynes/errors';
 
 import { db } from '../../../infra/db';
@@ -91,6 +91,21 @@ export function createCreateWorkspaceInviteHandler({
     // email to platform.workspace_members. The query intentionally returns
     // at most one row and never leaks the existing member's userId outside
     // this handler.
+    //
+    // Case-insensitive comparison: `identity.users.email` is stored as
+    // received from the Supabase JWT (`userEmailSchema` in `meGetOrCreate`
+    // trims + validates but does NOT lowercase), so a row like
+    // `User@Example.com` could otherwise bypass this guard when the inviter
+    // submits `user@example.com`. Push the lowercasing down to Postgres
+    // with `lower(users.email)` so the equality holds regardless of how the
+    // user's email was originally cased in the JWT. The right-hand side is
+    // already `.trim().toLowerCase()`-normalized above.
+    //
+    // Note: there is no `lower(users.email)` functional index today, so this
+    // query does a sequential scan over identity.users. Acceptable at MVP
+    // scale (a single workspace's member set is small); a follow-up can add
+    // `CREATE INDEX users_email_lower_idx ON identity.users (lower(email))`
+    // when the workspace count or member count grows.
     const memberRows = await dbClient
       .select({ userId: workspaceMembers.userId })
       .from(workspaceMembers)
@@ -99,7 +114,7 @@ export function createCreateWorkspaceInviteHandler({
         and(
           eq(workspaceMembers.workspaceId, ctx.workspaceId),
           eq(workspaceMembers.status, 'active'),
-          eq(users.email, emailNormalized),
+          eq(sql<string>`lower(${users.email})`, emailNormalized),
         ),
       )
       .limit(1);
