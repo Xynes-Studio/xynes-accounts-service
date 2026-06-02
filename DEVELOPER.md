@@ -465,6 +465,61 @@ This split lets MAIL-2 land without changing the 270-test accounts-service basel
 
 Tests live under `tests/unit/mail/` and include an in-process SMTP server (`smtpTransport.integration.test.ts`) that exercises the production `defaultSmtpDispatcher` against `Bun.listen` so the full handshake state machine is covered without depending on a live Inbucket.
 
+## Mailer Dispatch State Columns (MAIL-3)
+
+Three additive columns on `platform.workspace_invites` capture mailer dispatch state for MAIL-5's runtime wiring and `accounts.invites.resend` rate-limit cap.
+
+| Column                   | Type              | NULL?    | Default | Purpose                                                                                                  |
+|--------------------------|-------------------|----------|---------|----------------------------------------------------------------------------------------------------------|
+| `email_sent_at`          | `timestamptz`     | nullable | NULL    | Timestamp of the most recent **successful** `mailer.sendInvite` return. NULL = "no successful send yet". |
+| `email_attempts`         | `integer`         | NOT NULL | `0`     | Total dispatch attempts (success + failure). MAIL-5 bumps atomically via `email_attempts + 1`.           |
+| `last_email_error_code`  | `text` (closed)   | nullable | NULL    | Closed-set `MailerErrorCode` (see MAIL-2 table above) or NULL on success / no attempt.                   |
+
+### Source of truth
+
+- **Canonical migration:** `xynes/xynes-infra/supabase/migrations/20260601090000_workspace_invites_mail_columns.sql` — additive `ADD COLUMN IF NOT EXISTS` for all three; nullable / NOT NULL DEFAULT 0 semantics enforce backwards compat for pre-MAIL-3 rows.
+- **Drizzle mirror:** `src/infra/db/schema.ts` `workspaceInvites` block — `emailSentAt`, `emailAttempts`, `lastEmailErrorCode`. Camel-case TS names map to the snake-case SQL column names via Drizzle's first-argument string contract; the schema-mirror test at `tests/unit/workspace-invites-mail-columns.test.ts` regression-guards the mapping.
+
+### MAIL-5 write contract (preview — not landed yet)
+
+The columns are wired but **not written from any runtime path** in MAIL-3. MAIL-5 will introduce the writes:
+
+```ts
+// On successful dispatch (mailer.sendInvite resolves cleanly):
+await db.update(workspaceInvites)
+  .set({
+    emailSentAt: new Date(),
+    emailAttempts: sql`${workspaceInvites.emailAttempts} + 1`,
+    lastEmailErrorCode: null,
+  })
+  .where(eq(workspaceInvites.id, inviteId));
+
+// On MailerError (or any thrown):
+await db.update(workspaceInvites)
+  .set({
+    emailAttempts: sql`${workspaceInvites.emailAttempts} + 1`,
+    lastEmailErrorCode: error.code,  // closed-set MailerErrorCode only
+    // emailSentAt deliberately NOT touched
+  })
+  .where(eq(workspaceInvites.id, inviteId));
+```
+
+**Security contract:** MAIL-5's write path MUST only write the closed-set `MailerError.code` value to `last_email_error_code`. Raw provider error text NEVER reaches this column. The DB column is `text` (not a CHECK enum) so the enforcement is at the handler layer — MAIL-2's `MailerError` class is the gate.
+
+### Backwards compatibility
+
+- Pre-MAIL-3 invite rows auto-populate to `email_sent_at = NULL`, `email_attempts = 0`, `last_email_error_code = NULL` — matching the documented "no dispatch attempted" state.
+- Old-replica rolling deploys: pre-MAIL-3 code paths never reference these columns, so the NOT NULL DEFAULT / nullable settings auto-populate on INSERT.
+- `accounts.invites.create` return shape unchanged — MAIL-5 will record dispatch state via a separate UPDATE inside the handler, not by extending the return DTO.
+
+### Tests added by MAIL-3
+
+| File                                                | Tests | Coverage gate           |
+|-----------------------------------------------------|------:|-------------------------|
+| `tests/unit/workspace-invites-mail-columns.test.ts` | 9     | `schema.ts` 100% / 100% |
+
+The companion contract test on the canonical migration lives in `xynes-infra` at `scripts/test/workspace-invites-mail-columns.test.sh` (40 / 0 PASS — additive-only invariants, fail-closed defaults, plan reference, no-raw-credentials sweep). Both tests run automatically — the Bun unit test joins the 355-test baseline; the infra shell test is glob-discovered by `xynes-infra/scripts/test/run.sh`.
+
 ## Environment
 
 Scripts use `.env.dev` by default (Docker/dev). For local host runs, override:

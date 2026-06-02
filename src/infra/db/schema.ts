@@ -45,6 +45,24 @@ export const workspaceInvites = platformSchema.table('workspace_invites', {
   status: text('status').notNull().default('pending'),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  // ── MAIL-3 — mailer dispatch state ────────────────────────────────────
+  // Source migration: xynes/xynes-infra/supabase/migrations/
+  //   20260601090000_workspace_invites_mail_columns.sql
+  //
+  // `emailSentAt` — timestamp of the most recent SUCCESSFUL
+  //   mailer.sendInvite return. NULL = "no successful send yet"
+  //   (pre-MAIL-3 rows, or never attempted, or last attempt failed).
+  emailSentAt: timestamp('email_sent_at', { withTimezone: true }),
+  // `emailAttempts` — total dispatch attempts (success + failure).
+  //   MAIL-5 bumps atomically via `SET email_attempts = email_attempts + 1`.
+  //   Default 0 matches the pre-MAIL-3 / never-attempted state.
+  emailAttempts: integer('email_attempts').notNull().default(0),
+  // `lastEmailErrorCode` — closed-set MailerErrorCode from MAIL-2
+  //   (RECIPIENT_INVALID | PROVIDER_UNAVAILABLE | RATE_LIMITED |
+  //    TEMPLATE_RENDER_FAILED | PROVIDER_REJECTED) or NULL on success
+  //   / no attempt. Raw provider error text MUST NEVER be written
+  //   here — MAIL-5 writes only `MailerError.code`.
+  lastEmailErrorCode: text('last_email_error_code'),
 });
 
 // ── Workspace Admin Integration tables ──────────────────────────
