@@ -6,6 +6,7 @@ import { db } from '../../../infra/db';
 import { users, workspaceInvites, workspaceMembers } from '../../../infra/db/schema';
 import { createAuthzClient, type AuthzClient } from '../../../infra/authz/authzClient';
 import { generateInviteToken, type InviteTokenPair } from '../../../infra/security/inviteToken';
+import type { MailerClient } from '../../../infra/mail';
 import type { ActionContext } from '../../types';
 
 export type CreateWorkspaceInvitePayload = {
@@ -30,6 +31,27 @@ export type CreateWorkspaceInviteDependencies = {
   tokenFactory?: () => InviteTokenPair;
   now?: () => Date;
   expiresInDays?: number;
+  /**
+   * MAIL-2 — optional `MailerClient` injection point.
+   *
+   * Defaults to the frozen `noopMailer` so the existing
+   * `accounts.invites.create` behaviour is preserved byte-for-byte:
+   * the invite row lands, but no mail is dispatched. MAIL-5 flips
+   * the production composition to inject `StubMailerClient`
+   * (local-dev) or `ResendMailerClient` (hosted) and adds the
+   * actual `mailer.sendInvite(...)` call site after the row insert.
+   *
+   * This field intentionally lives here (handler-scope) rather than
+   * on `ActionContext` because:
+   *   - The mailer is part of the create-invite use case, not part
+   *     of the cross-cutting request context.
+   *   - Other handlers don't currently need a mailer; threading it
+   *     through `ActionContext` would force every handler to learn
+   *     about a concern that only invites care about.
+   *   - The DI pattern matches the existing `authzClient` / `dbClient`
+   *     fields and keeps the test surface narrow.
+   */
+  mailer?: MailerClient;
 };
 
 export function createCreateWorkspaceInviteHandler({
@@ -39,6 +61,13 @@ export function createCreateWorkspaceInviteHandler({
   tokenFactory = () => generateInviteToken(32),
   now = () => new Date(),
   expiresInDays = 7,
+  // MAIL-2 — `mailer` is part of `CreateWorkspaceInviteDependencies`
+  // (see field doc above) but intentionally NOT destructured in this
+  // story. MAIL-5 lands the actual `mailer.sendInvite(...)` call
+  // after the row insert and at that point will pick up the value
+  // from the destructure. Until then, accepting the field on the
+  // type but ignoring the runtime value preserves the 270-test
+  // baseline byte-for-byte.
 }: CreateWorkspaceInviteDependencies = {}) {
   return async (
     payload: CreateWorkspaceInvitePayload,

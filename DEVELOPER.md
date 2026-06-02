@@ -398,6 +398,73 @@ function resolveAuthzClient(injected?: AuthzClient): AuthzClient;
 
 **Test coverage:** 100% functions, 100% lines.
 
+## Mail Dispatch (MAIL-2)
+
+Vendor-neutral mailer abstraction for workspace-invite delivery. Source: `src/infra/mail/`.
+
+This module ships the **port + local-dev implementation + DI plumbing only**. The actual invocation of `mailer.sendInvite(...)` from `accounts.invites.create` lands in MAIL-5, alongside the new `accounts.invites.resend` action.
+
+### Public surface
+
+```ts
+import {
+  MailerClient,                   // port interface
+  SendInviteInput,
+  SendInviteResult,
+  MailerError,                    // closed-set error class
+  MailerErrorCode,
+  isMailerError,
+  StubMailerClient,               // local-dev implementation (stdout / SMTP relay)
+  noopMailer,                     // frozen no-op default
+} from '../infra/mail';
+```
+
+### Closed-set error codes (`MailerError`)
+
+| Code                     | statusHint | retryable | Surfaced when                                                         |
+|--------------------------|-----------:|:---------:|-----------------------------------------------------------------------|
+| `RECIPIENT_INVALID`      | 400        | no        | The `to` field failed validation, or the SMTP relay returned 550/553. |
+| `PROVIDER_UNAVAILABLE`   | 503        | yes       | TCP connect failure, read timeout, transient 4xx, or unknown error.   |
+| `RATE_LIMITED`           | 429        | yes       | The provider rejected the send because of a quota.                    |
+| `TEMPLATE_RENDER_FAILED` | 500        | no        | Required template fields are missing or empty.                        |
+| `PROVIDER_REJECTED`      | 502        | no        | Permanent provider rejection that is not the recipient itself.        |
+
+The `message` field is a fixed, sanitised string per code — implementations MUST NOT interpolate upstream provider error text into it. Use the optional `diagnosticTag` for log correlation; the tag is never concatenated into `message`.
+
+### `StubMailerClient` modes
+
+- **`{ mode: 'stdout' }`** — writes a single JSON line per dispatch via the configured `stdoutSink` (default `console.log`). The full invite token NEVER appears; the URL is masked through `maskInviteUrl` to `***<last8>`. PII minimisation: `inviterName` is intentionally NOT included in the JSON record.
+
+- **`{ mode: 'smtp_relay', relayUrl, fromAddress }`** — connects over plain SMTP to the configured relay (typically `smtp://127.0.0.1:54325` for the MAIL-1 Inbucket inbox). Speaks the minimal handshake (banner → EHLO → MAIL FROM → RCPT TO → DATA → body → QUIT) via a hand-rolled transport over `Bun.connect`. **No nodemailer dependency.** No TLS, no AUTH — local-dev only. Hosted environments use `ResendMailerClient` (MAIL-4) over HTTP.
+
+Header injection is prevented by sanitising CR/LF/TAB out of every header field value before composing the SMTP DATA block — a hostile `workspaceName` cannot add a `Bcc:` header.
+
+### DI hook in `accounts.invites.create`
+
+`CreateWorkspaceInviteDependencies` now carries an optional `mailer?: MailerClient`. MAIL-2 wires the TYPE only — the runtime code path in `create.ts` is unchanged. MAIL-5 will:
+
+1. Destructure `mailer = noopMailer` in the closure.
+2. After the existing `dbClient.insert(workspaceInvites)...`, branch on `ctx.actor?.kind`:
+   - `'api_key'` → skip dispatch entirely (Story C parity).
+   - `'user'` → call `await mailer.sendInvite({...})` inside try/catch.
+3. On success, bump `email_sent_at` + `email_attempts`.
+4. On `MailerError`, log the closed-set code (NOT the raw error) and write `last_email_error_code`.
+
+This split lets MAIL-2 land without changing the 270-test accounts-service baseline.
+
+### Test coverage
+
+| File                                      | Funcs   | Lines   |
+|-------------------------------------------|--------:|--------:|
+| `src/infra/mail/MailerError.ts`           | 100%    | 100%    |
+| `src/infra/mail/MailerClient.ts`          | n/a (types only) | n/a |
+| `src/infra/mail/noopMailer.ts`            | 100%    | 100%    |
+| `src/infra/mail/inviteUrlMask.ts`         | 100%    | 100%    |
+| `src/infra/mail/StubMailerClient.ts`      | 100%    | 100%    |
+| `src/infra/mail/smtpTransport.ts`         | 95%     | 98.56%  |
+
+Tests live under `tests/unit/mail/` and include an in-process SMTP server (`smtpTransport.integration.test.ts`) that exercises the production `defaultSmtpDispatcher` against `Bun.listen` so the full handshake state machine is covered without depending on a live Inbucket.
+
 ## Environment
 
 Scripts use `.env.dev` by default (Docker/dev). For local host runs, override:
