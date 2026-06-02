@@ -186,3 +186,85 @@ describe('redactLogArgs — variadic logger args', () => {
     expect(out).toEqual(ctx);
   });
 });
+
+// ──────────────────────────────────────────────────────────────────────────
+// MAIL-4 — Resend API key redaction
+// ──────────────────────────────────────────────────────────────────────────
+
+describe('redactLogValue — MAIL-4 Resend API key string-content scrubbing', () => {
+  const RESEND_KEY = 're_aabbccddee_eeff00112233';
+
+  it('scrubs a bare Resend API key from a string', () => {
+    const out = redactLogValue(RESEND_KEY) as string;
+    expect(out).toBe('[REDACTED:RESEND_API_KEY]');
+  });
+
+  it('scrubs a Resend API key embedded in a Bearer header string', () => {
+    const out = redactLogValue(`Authorization: Bearer ${RESEND_KEY}`) as string;
+    expect(out).toContain('[REDACTED:RESEND_API_KEY]');
+    expect(out).not.toContain('re_aabbccddee');
+  });
+
+  it('scrubs multiple Resend keys from the same string', () => {
+    const a = 're_aaaaaaaa_bbbbbbbb';
+    const b = 're_cccccccc_dddddddd';
+    const out = redactLogValue(`first=${a} second=${b}`) as string;
+    const matches = out.match(/\[REDACTED:RESEND_API_KEY\]/g);
+    expect(matches?.length).toBe(2);
+    expect(out).not.toMatch(/re_[a-zA-Z0-9_]{8}/);
+  });
+
+  it('does NOT scrub the literal "re_" prefix when followed by too few chars', () => {
+    // A 7-char tail would be ambiguous with regular text; the pattern
+    // requires at least 8 chars. The string `re_short` is harmless.
+    const out = redactLogValue('the prefix re_short stays') as string;
+    expect(out).toBe('the prefix re_short stays');
+  });
+
+  it('does NOT scrub `regex`, `repeat`, `redirect`, or other re-prefixed words', () => {
+    // The pattern is `re_<X>` not `re<X>` so words without an
+    // underscore should pass through untouched.
+    const out = redactLogValue('regex repeats redirect representation reverse') as string;
+    expect(out).toBe('regex repeats redirect representation reverse');
+  });
+
+  it('redacts both Resend and Xynes raw keys when both appear', () => {
+    const out = redactLogValue(`xyn=${RAW_KEY} rs=${RESEND_KEY}`) as string;
+    expect(out).toContain('[REDACTED:RAW_API_KEY]');
+    expect(out).toContain('[REDACTED:RESEND_API_KEY]');
+    expect(out).not.toContain('xynes_live_');
+    expect(out).not.toContain('re_aabbccddee');
+  });
+});
+
+describe('redactLogValue — MAIL-4 Resend field-name redaction', () => {
+  it('redacts the value of a field named `resendApiKey`', () => {
+    const out = redactLogValue({ resendApiKey: 're_secret_value_long_enough' });
+    expect((out as Record<string, unknown>).resendApiKey).toBe('[REDACTED]');
+  });
+
+  it('redacts the value of a field named `resend_api_key`', () => {
+    const out = redactLogValue({ resend_api_key: 're_secret_value_long_enough' });
+    expect((out as Record<string, unknown>).resend_api_key).toBe('[REDACTED]');
+  });
+
+  it('redacts the value of a field named `resend-api-key`', () => {
+    const out = redactLogValue({ 'resend-api-key': 're_secret_value_long_enough' });
+    expect((out as Record<string, unknown>)['resend-api-key']).toBe('[REDACTED]');
+  });
+
+  it('PRESERVES `resendMessageId` (public audit identifier)', () => {
+    // The Resend response carries an `id` field which we surface
+    // publicly as `messageId`. It is a public audit handle — NOT a
+    // secret — and MUST remain readable in operator logs.
+    const out = redactLogValue({ messageId: 'resend-msg-abc-123' });
+    expect((out as Record<string, unknown>).messageId).toBe('resend-msg-abc-123');
+  });
+
+  it('PRESERVES the literal string "resend" when used as a non-secret value', () => {
+    // E.g. logging `{ provider: 'resend' }` is just metadata; we
+    // shouldn't redact it.
+    const out = redactLogValue({ provider: 'resend' });
+    expect((out as Record<string, unknown>).provider).toBe('resend');
+  });
+});

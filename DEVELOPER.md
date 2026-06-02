@@ -520,6 +520,101 @@ await db.update(workspaceInvites)
 
 The companion contract test on the canonical migration lives in `xynes-infra` at `scripts/test/workspace-invites-mail-columns.test.sh` (40 / 0 PASS — additive-only invariants, fail-closed defaults, plan reference, no-raw-credentials sweep). Both tests run automatically — the Bun unit test joins the 355-test baseline; the infra shell test is glob-discovered by `xynes-infra/scripts/test/run.sh`.
 
+## Resend Mailer + Secret Manager (MAIL-4)
+
+MAIL-4 ships the hosted-mode mailer (`ResendMailerClient`), the vendor-neutral `SecretManagerClient` interface (mirrored from STORAGE-FU-3 per plan §13 Q1), and the env-driven composition helper (`resolveMailerFromEnv`). Runtime wiring into the `accounts.invites.create` handler and the new `accounts.invites.resend` action remain MAIL-5 scope.
+
+### Source layout
+
+```
+src/infra/
+├── mail/
+│   ├── ResendMailerClient.ts     (NEW — hosted HTTP POST to Resend API)
+│   ├── resolveMailerFromEnv.ts   (NEW — composition helper)
+│   └── index.ts                  (extended barrel re-exporting MAIL-4)
+└── secrets/                       (NEW — secret-manager interface)
+    ├── SecretManagerClient.ts
+    └── index.ts
+```
+
+### `ResendMailerClient` contract
+
+Hosted `MailerClient` implementation. Reaches Resend via `POST https://api.resend.com/emails` with a Bearer API key. Key material is held in a **non-enumerable** instance property (`Object.defineProperty(..., { enumerable: false })`) so `JSON.stringify(client)` cannot leak it. Provider error response bodies are **never** concatenated into the surfaced `MailerError.message` — the closed-set HTTP-status → `MailerErrorCode` mapping is the only signal that escapes the boundary.
+
+**Closed-set HTTP status mapping:**
+
+| Resend HTTP | `MailerErrorCode`        | Retryable? |
+|------------:|--------------------------|:----------:|
+| 422         | `RECIPIENT_INVALID`      | no         |
+| 400         | `PROVIDER_REJECTED`      | no         |
+| 401 / 403   | `PROVIDER_REJECTED`      | no         |
+| 429         | `RATE_LIMITED`           | yes        |
+| 5xx         | `PROVIDER_UNAVAILABLE`   | yes        |
+| Network throw / timeout / abort | `PROVIDER_UNAVAILABLE` | yes |
+
+Construction validates the API key shape (`re_` prefix + ≥ 8-char tail) and the `fromAddress` (non-empty, email-looking). Misconfiguration surfaces as `TEMPLATE_RENDER_FAILED` at construction — defense in depth against placeholder env values like `replace-with-actual-key`.
+
+### `SecretManagerClient` interface
+
+Vendor-neutral contract for resolving `MAIL_RESEND_SECRET_REF` (a `secret://<path>` URI) to mail-provider credentials. Mirrors the storage-service `STORAGE-FU-3` interface byte-for-byte on URI parsing rules + closed-set `SecretManagerErrorCode` (`NOT_FOUND` / `BACKEND_UNAVAILABLE` / `MATERIAL_INVALID` / `URI_INVALID`).
+
+Local-dev impl (`EnvSecretManagerClient`) reads `MAIL_CREDENTIAL_<UPPERCASE_PATH>_API_KEY` + `MAIL_CREDENTIAL_<UPPERCASE_PATH>_FROM_ADDRESS` from `process.env`. The env prefix uses an **injective** encoding (`/` → `__`, `-` → `_`, underscores forbidden in the path) so two distinct credential refs can never collide on the same env block.
+
+**Per plan §13 Q1:** option (b) — copy a minimal interface into `accounts-service/src/infra/secrets/`. A future shared-contract extraction into `xynes-platform-contracts` (option (a)) will deduplicate the storage-service mirror.
+
+### `resolveMailerFromEnv` decision matrix
+
+```
+MAIL_PROVIDER=resend  +  MAIL_RESEND_SECRET_REF set  →  ResendMailerClient
+                      +  resolver throws            →  throws closed-set MailerError
+MAIL_PROVIDER=stub    +  SMTP_RELAY_URL set         →  StubMailerClient (smtp_relay)
+MAIL_PROVIDER=stub    +  SMTP_RELAY_URL unset       →  StubMailerClient (stdout)
+MAIL_PROVIDER=noop                                   →  noopMailer (DI default)
+MAIL_PROVIDER unset / malformed                      →  noopMailer  (fail-open)
+```
+
+**Fail-open default** for unknown / unset `MAIL_PROVIDER` matches CMS-API-KEY-ACTOR-1 Story C's "best-effort cleanup" posture: the invite row still lands; only the side effect is skipped.
+
+### Env contract
+
+| Var                          | Default | Required when                    | Purpose                                                                                                            |
+|------------------------------|---------|----------------------------------|--------------------------------------------------------------------------------------------------------------------|
+| `MAIL_PROVIDER`              | unset   | always (else falls back to noop) | `resend` \| `stub` \| `noop`. Case-insensitive; trimmed.                                                            |
+| `MAIL_RESEND_SECRET_REF`     | unset   | `MAIL_PROVIDER=resend`           | `secret://<path>` URI. Resolved through `SecretManagerClient`.                                                     |
+| `SMTP_RELAY_URL`             | unset   | optional                         | When `MAIL_PROVIDER=stub`, picks `smtp_relay` mode (`smtp://127.0.0.1:54325` for the MAIL-1 Inbucket inbox).        |
+| `MAIL_STUB_FROM_ADDRESS`     | `no-reply@xynes.local` | optional         | Bound `from` for the stub when `smtp_relay` mode is active.                                                        |
+| `MAIL_CREDENTIAL_<P>_API_KEY` | unset  | local-dev `EnvSecretManagerClient` | Raw Resend key for the `<P>` path component. **Never committed.**                                                  |
+| `MAIL_CREDENTIAL_<P>_FROM_ADDRESS` | unset | local-dev `EnvSecretManagerClient` | Sender address for the `<P>` path component.                                                                       |
+
+**NEVER commit a raw `re_<key>` value to any tracked file.** The `EnvSecretManagerClient` is a local-dev-only backend; hosted environments wire AWS Secrets Manager / Doppler / Vault implementations of the same interface in their composition root (each is a separate per-environment story per plan §13 Q1).
+
+### Security invariants (proven by tests)
+
+1. **Bearer API key NEVER leaves the `Authorization` header.** Stored as a non-enumerable instance property; `JSON.stringify(client)` produces a tiny object that does not carry the key. Tests assert the key is absent from every URL / body / serialised form.
+2. **Resend response body bytes NEVER appear in any `MailerError`.** A hostile 401 response containing `AKIA-LEAK-1234 X-Amz-Signature=DEADBEEF re_LEAK_5678 xynes_live_abc` is asserted not to leak ANY of those substrings into the thrown error message.
+3. **Pre-validation runs BEFORE any `fetch` call.** Malformed recipient / blank template fields surface as closed-set errors with `fetch` call count 0.
+4. **CR/LF/TAB sanitised** out of every header-bound field before composing the subject + plaintext body — defense in depth on top of Resend's own sanitization.
+5. **Log redaction extension:** `src/infra/log-redaction.ts` now scrubs `re_[A-Za-z0-9_-]{8,}` substrings as `[REDACTED:RESEND_API_KEY]` AND drops fields named `resendApiKey` / `resend_api_key` / `resend-api-key`. Public `messageId` audit handle is preserved.
+
+### Tests added by MAIL-4
+
+| File                                              | Tests | Coverage |
+|---------------------------------------------------|------:|----------|
+| `tests/unit/secrets/SecretManagerClient.test.ts`  | 31    | 100% / 100% |
+| `tests/unit/mail/ResendMailerClient.test.ts`      | 44    | 92.31% / 99.33% |
+| `tests/unit/mail/resolveMailerFromEnv.test.ts`    | 25    | 100% / 98.67% |
+| `tests/unit/log-redaction.test.ts` (MAIL-4 block) | +11   | 100% / 97.22% |
+
+**+111 net new tests** (suite 355 → 466). Overall coverage 89.99% funcs / 91.95% lines (above ADR-001 80% floor).
+
+### Companion redaction extensions in `xynes-gateway`
+
+MAIL-4 extends the gateway's existing redaction stack so a hostile downstream response carrying a raw Resend key cannot leak into access-log snippets or telemetry:
+
+- `src/telemetry/types.ts` — new `RAW_RESEND_KEY_REDACTION_PATTERN` (`re_[A-Za-z0-9_-]{8,}`); `resendapikey` + `resend_api_key` added to `FORBIDDEN_TELEMETRY_FIELDS`.
+- `src/telemetry/sanitize.ts` — `truncateUserAgent` applies both `xynes_live_*` AND `re_*` redactions.
+- `src/logging/redaction.ts` — `SENSITIVE_TEXT_PATTERN` extended with the `re_*` arm. The existing `apikey` field-name substring tier already covers `resendApiKey` / `resend_api_key` / `resend-api-key` — verified by dedicated tests.
+
 ## Environment
 
 Scripts use `.env.dev` by default (Docker/dev). For local host runs, override:
