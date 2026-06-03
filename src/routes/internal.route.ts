@@ -26,6 +26,7 @@ import {
   createWorkspaceInvitePayloadSchema,
   resolveWorkspaceInvitePayloadSchema,
   acceptWorkspaceInvitePayloadSchema,
+  resendWorkspaceInvitePayloadSchema,
   platformDomainsListPayloadSchema,
   platformDomainsCreatePayloadSchema,
   platformDomainsVerifyPayloadSchema,
@@ -277,6 +278,9 @@ internalRoute.post('/accounts-actions', async (c) => {
         break;
       case 'accounts.invites.accept':
         validatedPayload = acceptWorkspaceInvitePayloadSchema.parse(rawPayload);
+        break;
+      case 'accounts.invites.resend':
+        validatedPayload = resendWorkspaceInvitePayloadSchema.parse(rawPayload);
         break;
       case 'platform.domains.list':
         validatedPayload = platformDomainsListPayloadSchema.parse(rawPayload);

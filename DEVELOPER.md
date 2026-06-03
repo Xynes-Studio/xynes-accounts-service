@@ -615,6 +615,88 @@ MAIL-4 extends the gateway's existing redaction stack so a hostile downstream re
 - `src/telemetry/sanitize.ts` — `truncateUserAgent` applies both `xynes_live_*` AND `re_*` redactions.
 - `src/logging/redaction.ts` — `SENSITIVE_TEXT_PATTERN` extended with the `re_*` arm. The existing `apikey` field-name substring tier already covers `resendApiKey` / `resend_api_key` / `resend-api-key` — verified by dedicated tests.
 
+## Invite-mail dispatch + Resend action (MAIL-5)
+
+MAIL-5 is the runtime wiring story: it connects the MAIL-2 / MAIL-3 / MAIL-4 building blocks to the actual `accounts.invites.create` handler and ships the new `accounts.invites.resend` action.
+
+### `accounts.invites.create` — best-effort mailer dispatch
+
+`src/actions/handlers/invites/create.ts` now performs a best-effort `mailer.sendInvite(...)` call after the invite row insert. The dispatch is **fire-and-forget** from the handler's point of view:
+
+- A thrown `MailerError` (or any other error) NEVER undoes the row insert.
+- The closed-set `MailerError.code` is written to `last_email_error_code` (MAIL-3 column) so an operator can re-dispatch via the new `accounts.invites.resend` action later.
+- The `accounts.invites.create` return shape is preserved byte-for-byte (the row insert + raw token surface stays unchanged).
+
+Skip gates (both deliberate, both keep the legacy 270-test pre-MAIL-5 baseline passing):
+
+- `mailer === noopMailer` — the production composition root must explicitly inject a non-noop mailer (or call `resolveMailerFromEnv()`). Until then, dispatch is silently skipped — same behaviour as the pre-MAIL-2 code path.
+- `ctx.actor?.kind === 'api_key'` — CMS-API-KEY-ACTOR-1 Story C parity. The invite row still lands; only the mailer side effect is short-circuited (machine credentials should not trigger user-facing emails).
+
+### `accounts.invites.resend` — re-dispatch with token rotation
+
+`src/actions/handlers/invites/resend.ts` is a new action handler that re-dispatches the invitation email for a still-pending invite row. It is registered under the action key `accounts.invites.resend` and wired through the gateway at `POST /workspaces/:workspaceId/invites/:inviteId/resend`.
+
+**Design note — token rotation.** The DB stores only the hash of the invite token (see `inviteToken.ts`); the raw token is shown ONCE at create time. Two designs were considered: (A) require the caller to supply the raw token in the payload (matches the plan §9.4 "no token regenerated" line but pushes raw tokens into client memory long after `create`), or (B) generate a fresh token pair, store the new hash, dispatch the new URL (matches plan §3 "no raw token persistence" and the §9.2 `{ inviteId: string }` payload shape, but contradicts §9.4).
+
+**We chose (B).** Rationale:
+
+- §3 ("no raw token persistence") is the stronger constraint — design (A) would force the auth-app to retain the raw token in memory or session storage, defeating the hash-only DB invariant.
+- Invalidating the old emailed link on resend is a security positive — a leaked/forwarded old link cannot be used after the operator clicks Resend.
+- The new token uses the SAME `expiresAt` as the original — resend does NOT extend the lifetime. To extend the window, the operator must create a fresh invite.
+- The token rotation + dispatch-state UPDATE land in a single atomic SQL UPDATE so a crash between them cannot leave the row in an inconsistent state.
+
+**Payload + return shape**:
+
+| Field | Type | Notes |
+|---|---|---|
+| `inviteId` | uuid | Payload — the invite to resend. |
+| `inviteId` (response) | uuid | Echo of the input. |
+| `emailAttempts` | int | Post-bump value of the MAIL-3 counter. |
+| `emailSentAt` | iso8601 \| null | Stamped on success; null on failure or never-sent. |
+| `lastEmailErrorCode` | `MailerErrorCode` \| null | Closed set; null on success. |
+
+**Rate-limit**: `MAIL_RESEND_MAX_ATTEMPTS` env var (default 5). When `email_attempts >= cap`, the handler throws `429 RATE_LIMITED` WITHOUT rotating the token or invoking the mailer. Operators tune the cap per environment.
+
+**Guard rails (closed set):**
+
+- `MISSING_CONTEXT` (400) — `ctx.workspaceId` missing.
+- `FORBIDDEN_ACTOR_KIND` (403) — `ctx.actor?.kind === 'api_key'`. Defense-in-depth; the gateway also blocks api_key actors because the action is not in any MVP API-key preset.
+- `UNAUTHORIZED` (401) — `ctx.userId` missing.
+- `FORBIDDEN` (403) — authz check failed.
+- `NOT_FOUND` (404) — invite row missing OR `invite.workspaceId !== ctx.workspaceId` (cross-workspace probes use the same envelope as truly-unknown ids — no enumeration oracle).
+- `INVALID_STATE` (409) — invite status is not `pending`.
+- `GONE` (410) — invite expiresAt has passed.
+- `RATE_LIMITED` (429) — `email_attempts >= MAIL_RESEND_MAX_ATTEMPTS`.
+
+### Env contract additions
+
+- `INVITE_BASE_URL` (optional) — base URL for composing the invite link (`${INVITE_BASE_URL}/invite/${token}`). Defaults to `http://localhost:3100` for local-dev parity with the auth-app's host port. Trailing slashes are stripped so `https://app.xynes.com/` and `https://app.xynes.com` are equivalent.
+- `MAIL_RESEND_MAX_ATTEMPTS` (optional) — lifetime resend-attempt cap per invite row. Default 5. Beyond the cap, `accounts.invites.resend` returns 429 without invoking the mailer or rotating the token.
+
+### Tests added by MAIL-5
+
+| File | Tests | Per-file coverage (funcs / lines) |
+|---|------:|---|
+| `tests/unit/mail/create-mail-dispatch.test.ts` | 13 | covers `resolveInviteBaseUrl` + the dispatch block in `create.ts` |
+| `tests/unit/mail/resend.test.ts` | 23 | covers the full resend handler matrix |
+
+Plus a one-line update to the obsolete `tests/unit/mail/create-mailer-di.test.ts` test name (the MAIL-2 "does NOT call mailer" assertion was replaced with the MAIL-5 noopMailer short-circuit assertion).
+
+### Security invariants (proven by tests)
+
+1. **Raw token never appears in DB UPDATEs.** Both `create.ts` and `resend.ts` UPDATE patches are swept per-field for the raw token literal — the token only lives in the `inviteUrl` passed to the mailer.
+2. **api_key actors never trigger mail.** Both handlers gate on `ctx.actor?.kind === 'api_key'` (create skips silently; resend hard-fails with 403 `FORBIDDEN_ACTOR_KIND`).
+3. **Closed-set error codes only.** `MailerError.code` is the only value written to `last_email_error_code`; non-MailerError exceptions are bucketed as `PROVIDER_UNAVAILABLE`. Raw provider error text NEVER reaches the column.
+4. **Token rotation is atomic with dispatch state.** A single SQL UPDATE rotates `token` AND updates the MAIL-3 columns — a crash between the two cannot leave the row inconsistent.
+5. **Cross-workspace probes return NOT_FOUND.** The resend handler filters by both `id` AND `workspaceId`; a caller targeting another workspace's invite gets the same envelope as a truly-unknown id (no enumeration oracle).
+6. **Rate-limit cap blocks both dispatch AND token rotation.** When the cap is hit, `RATE_LIMITED` (429) is thrown BEFORE the token factory runs — so old links continue to work until the operator creates a fresh invite.
+
+### Operator notes
+
+- Local-dev: set `MAIL_PROVIDER=stub` + `SMTP_RELAY_URL=smtp://127.0.0.1:54325` to dispatch via Inbucket (MAIL-1 inbox). Open `http://127.0.0.1:54324` to read the dispatched mail.
+- Hosted: set `MAIL_PROVIDER=resend` + `MAIL_RESEND_SECRET_REF=secret://xynes/mail/resend-<env>` and wire a real `SecretManagerClient` implementation in the composition root.
+- When `MAIL_PROVIDER` is unset OR malformed, `resolveMailerFromEnv()` returns `noopMailer` — the invite row lands but no mail is dispatched. Set the env var deliberately in every deployment.
+
 ## Environment
 
 Scripts use `.env.dev` by default (Docker/dev). For local host runs, override:

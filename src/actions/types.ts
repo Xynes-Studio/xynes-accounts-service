@@ -11,6 +11,7 @@ export type AccountsActionKey =
   | 'accounts.invites.create'
   | 'accounts.invites.resolve'
   | 'accounts.invites.accept'
+  | 'accounts.invites.resend'
   | 'platform.domains.list'
   | 'platform.domains.create'
   | 'platform.domains.verify'
