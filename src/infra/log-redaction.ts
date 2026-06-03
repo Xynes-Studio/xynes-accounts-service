@@ -28,23 +28,40 @@
 
 /** Marker for the secret part of a workspace API key. */
 const RAW_API_KEY_REDACTION_PATTERN = /xynes_live_[a-fA-F0-9]+/g;
+const RAW_RESEND_KEY_REDACTION_PATTERN = /re_[A-Za-z0-9_-]{8,}/g;
 
 /**
  * Field-name patterns that always carry secret material. Anchored
  * regex (^...$) so we never accidentally redact `apiKeyId` (which
  * contains `apiKey` as a substring but is the public UUID).
+ *
+ * MAIL-4 extension: also covers Resend-specific field names
+ * (`resendApiKey`, `resend_api_key`, `resend-api-key`) so a config
+ * dump that happens to land in a log line cannot leak the raw key.
  */
 const SENSITIVE_FIELD_NAME_PATTERN =
-  /^(?:authorization|cookie|set-cookie|password|secret|(?:.*[-_]?)?(?:raw[-_]?key|key[-_]?hash)|x[-_]?xs[-_]?api[-_]?key|api[-_]?key)$/i;
+  /^(?:authorization|cookie|set-cookie|password|secret|(?:.*[-_]?)?(?:raw[-_]?key|key[-_]?hash)|x[-_]?xs[-_]?api[-_]?key|api[-_]?key|resend[-_]?api[-_]?key)$/i;
 
 /**
  * Substring patterns within string values that should always be
- * scrubbed. Currently just raw API keys; bearer tokens are normally
- * carried in the Authorization header which is already scrubbed by
- * field-name match before string-content scrubbing runs.
+ * scrubbed. Currently:
+ *   - Raw workspace API keys (`xynes_live_<hex>`).
+ *   - MAIL-4: Raw Resend API keys (`re_<base64ish>`). Resend's
+ *     documented key shape is `re_` followed by 16+ base64-ish chars;
+ *     we use `[A-Za-z0-9_-]{8,}` so accidental partial logs are
+ *     redacted along with full keys. Defense in depth — the
+ *     `ResendMailerClient` never logs the key on purpose, but any
+ *     log line that interpolates a config object could otherwise
+ *     leak it.
+ *
+ * Bearer tokens are normally carried in the Authorization header which
+ * is already scrubbed by field-name match before string-content
+ * scrubbing runs.
  */
 function scrubStringContent(value: string): string {
-  return value.replace(RAW_API_KEY_REDACTION_PATTERN, '[REDACTED:RAW_API_KEY]');
+  return value
+    .replace(RAW_API_KEY_REDACTION_PATTERN, '[REDACTED:RAW_API_KEY]')
+    .replace(RAW_RESEND_KEY_REDACTION_PATTERN, '[REDACTED:RESEND_API_KEY]');
 }
 
 /**
