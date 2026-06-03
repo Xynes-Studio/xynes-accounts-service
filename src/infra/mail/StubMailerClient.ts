@@ -185,15 +185,26 @@ function composeInviteMessage(args: {
   const inviterLine = inviterForBody
     ? `${inviterForBody} has invited you to join ${workspaceForBody} on Xynes.`
     : `You've been invited to join ${workspaceForBody} on Xynes.`;
+  // Mirror `ResendMailerClient.composeTextBody` byte-for-byte so the
+  // local Inbucket/Mailpit preview matches what Resend dispatches in
+  // production. Polished 2026-06-03.
+  const expiresHuman = formatExpiryForBody(args.expiresAt);
   const body = [
+    'Hi,',
+    '',
     inviterLine,
     '',
-    'Open the invitation:',
-    args.inviteUrl,
+    'Click the link below to accept the invitation:',
     '',
-    `This link expires on ${args.expiresAt}.`,
+    `    ${args.inviteUrl}`,
     '',
-    "If you weren't expecting this invitation, you can safely ignore this message.",
+    `This invitation expires on ${expiresHuman}.`,
+    '',
+    '----------------------------------------',
+    '',
+    "If you weren't expecting this invitation, you can safely ignore this message — no account will be created and no further emails will be sent.",
+    '',
+    '— The Xynes team',
     '',
   ].join('\r\n');
   // Wrap the message id in angle brackets per RFC-5322 §3.6.4.
@@ -209,6 +220,29 @@ function composeInviteMessage(args: {
     'Content-Transfer-Encoding: 8bit',
   ].join('\r\n');
   return `${headers}\r\n\r\n${body}`;
+}
+
+/**
+ * Format the ISO-8601 `expiresAt` string into a human-readable date for
+ * the body. Mirrors `ResendMailerClient.formatExpiryForBody` byte-for-byte
+ * so the local Mailpit preview matches what Resend dispatches in production.
+ *
+ * Falls back to the raw input when the value does not parse as a Date,
+ * so a hostile / unparseable upstream value never throws inside compose.
+ */
+function formatExpiryForBody(raw: string): string {
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return raw;
+  try {
+    return d.toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      timeZone: 'UTC',
+    });
+  } catch {
+    return d.toISOString();
+  }
 }
 
 export class StubMailerClient implements MailerClient {

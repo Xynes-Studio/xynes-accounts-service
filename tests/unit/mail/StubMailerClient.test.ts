@@ -225,7 +225,11 @@ describe('StubMailerClient — SMTP relay mode (MAIL-2)', () => {
     // Body carries the inviter + workspace + full invite URL.
     expect(sent.messageData).toContain('Alice has invited you to join Acme');
     expect(sent.messageData).toContain(VALID_INPUT.inviteUrl);
-    expect(sent.messageData).toContain(VALID_INPUT.expiresAt);
+    // 2026-06-03 polish: expiresAt is rendered via Intl ('en-US', UTC) into
+    // 'Month D, YYYY' to match `ResendMailerClient.composeTextBody`. The raw
+    // ISO is intentionally NOT present in the rendered body.
+    expect(sent.messageData).toContain('December 31, 2026');
+    expect(sent.messageData).not.toContain(VALID_INPUT.expiresAt);
   });
 
   it('prefers the server-issued messageId over the locally synthesised one', async () => {

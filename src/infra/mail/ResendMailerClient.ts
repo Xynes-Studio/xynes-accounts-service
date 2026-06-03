@@ -399,6 +399,11 @@ export class ResendMailerClient implements MailerClient {
  *
  * The function is exported under `__forTesting__` (see end of file) so
  * tests can verify the body never embeds raw header material.
+ *
+ * Plaintext-only by design (MAIL-4 §57): every email client renders it
+ * identically and no HTML-escape concerns. Polished 2026-06-03 — added
+ * a clear CTA section, an inviter line on its own row, a human-readable
+ * expiry, and a horizontal separator before the safe-to-ignore footer.
  */
 function composeTextBody(args: {
   inviterName: string | null;
@@ -409,17 +414,57 @@ function composeTextBody(args: {
   const greeting = args.inviterName
     ? `${args.inviterName} has invited you to join ${args.workspaceName} on Xynes.`
     : `You've been invited to join ${args.workspaceName} on Xynes.`;
+
+  const expiresHuman = formatExpiryForBody(args.expiresAt);
+
   return [
+    'Hi,',
+    '',
     greeting,
     '',
-    'Open the invitation:',
-    args.inviteUrl,
+    'Click the link below to accept the invitation:',
     '',
-    `This link expires on ${args.expiresAt}.`,
+    `    ${args.inviteUrl}`,
     '',
-    "If you weren't expecting this invitation, you can safely ignore this message.",
+    `This invitation expires on ${expiresHuman}.`,
+    '',
+    '----------------------------------------',
+    '',
+    "If you weren't expecting this invitation, you can safely ignore this message — no account will be created and no further emails will be sent.",
+    '',
+    '— The Xynes team',
     '',
   ].join('\n');
+}
+
+/**
+ * Format the ISO-8601 `expiresAt` string into a human-readable date for
+ * the body. Falls back to the raw input when the value does not parse
+ * as a Date, so a hostile / unparseable upstream value never throws.
+ *
+ * The format is intentionally locale-neutral (UTC, "Month D, YYYY") so
+ * the email reads the same regardless of the recipient's locale. This
+ * mirrors the auth-app's MAIL-6 success-Alert formatting choice.
+ *
+ * Exported via `__forTesting__` so the locale-stable behaviour can be
+ * asserted directly.
+ */
+function formatExpiryForBody(raw: string): string {
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return raw;
+  // toLocaleDateString with 'en-US' + UTC time zone gives us a stable
+  // "June 10, 2026" shape independent of server locale or DST.
+  try {
+    return d.toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      timeZone: 'UTC',
+    });
+  } catch {
+    // Defensive fallback if Intl is unavailable in the runtime.
+    return d.toISOString();
+  }
 }
 
 /**
@@ -428,6 +473,7 @@ function composeTextBody(args: {
  */
 export const __forTesting__ = Object.freeze({
   composeTextBody,
+  formatExpiryForBody,
   httpStatusToMailerCode,
   isProbablyValidResendKey,
   resolveTimeoutMs,
