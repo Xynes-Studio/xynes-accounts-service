@@ -181,10 +181,10 @@ export function createResendWorkspaceInviteHandler({
       throw new DomainError('Access denied', 'FORBIDDEN', 403);
     }
 
-    // Look up the invite. We deliberately filter by BOTH `id` and
-    // `workspaceId` so a caller cannot resend an invite that belongs
-    // to a different workspace — the workspaceId from the gateway's
-    // route param is authoritative.
+    // Look up the invite by id. The workspaceId is verified at the
+    // JS level on the returned row so cross-workspace probes return
+    // the same `NOT_FOUND` envelope as truly-unknown ids — no
+    // enumeration oracle. Pattern mirrors `accept.ts`.
     const inviteRows = await dbClient
       .select({
         id: workspaceInvites.id,
