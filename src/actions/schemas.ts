@@ -63,6 +63,19 @@ export const acceptWorkspaceInvitePayloadSchema = z
   })
   .passthrough();
 
+/**
+ * MAIL-5 — Payload for the `accounts.invites.resend` action.
+ *
+ * Just the invite id. The handler rotates the token internally and
+ * dispatches the new URL — the caller does NOT supply the raw token
+ * (see `resend.ts` file header for the design rationale).
+ */
+export const resendWorkspaceInvitePayloadSchema = z
+  .object({
+    inviteId: z.string().uuid(),
+  })
+  .strict();
+
 // ── Platform Domain Action Schemas ──────────────────────────────
 
 export const platformDomainsListPayloadSchema = z.object({}).strict();

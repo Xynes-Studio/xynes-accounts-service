@@ -11,6 +11,7 @@ import { createWorkspaceHandler } from './handlers/workspaces/create';
 import { createWorkspaceInviteHandler } from './handlers/invites/create';
 import { resolveWorkspaceInviteHandler } from './handlers/invites/resolve';
 import { acceptWorkspaceInviteHandler } from './handlers/invites/accept';
+import { resendWorkspaceInviteHandler } from './handlers/invites/resend';
 import {
   listDomainsHandler,
   createDomainHandler,
@@ -38,6 +39,7 @@ export function registerAccountsActions() {
   registerAction('accounts.invites.create', createWorkspaceInviteHandler);
   registerAction('accounts.invites.resolve', resolveWorkspaceInviteHandler);
   registerAction('accounts.invites.accept', acceptWorkspaceInviteHandler);
+  registerAction('accounts.invites.resend', resendWorkspaceInviteHandler);
 
   // ── Platform Domain Actions ───────────────────────────────────
   registerAction('platform.domains.list', listDomainsHandler);

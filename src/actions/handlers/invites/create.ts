@@ -3,10 +3,10 @@ import { and, eq, sql } from 'drizzle-orm';
 import { DomainError } from '@xynes/errors';
 
 import { db } from '../../../infra/db';
-import { users, workspaceInvites, workspaceMembers } from '../../../infra/db/schema';
+import { users, workspaceInvites, workspaceMembers, workspaces } from '../../../infra/db/schema';
 import { createAuthzClient, type AuthzClient } from '../../../infra/authz/authzClient';
 import { generateInviteToken, type InviteTokenPair } from '../../../infra/security/inviteToken';
-import type { MailerClient } from '../../../infra/mail';
+import { noopMailer, MailerError, isMailerError, type MailerClient } from '../../../infra/mail';
 import type { ActionContext } from '../../types';
 
 export type CreateWorkspaceInvitePayload = {
@@ -32,27 +32,66 @@ export type CreateWorkspaceInviteDependencies = {
   now?: () => Date;
   expiresInDays?: number;
   /**
-   * MAIL-2 — optional `MailerClient` injection point.
+   * MAIL-2 / MAIL-5 — Mailer used to dispatch the invite email after
+   * the row lands. Defaults to the frozen `noopMailer` so legacy
+   * callers (and the existing 270-test baseline) see byte-for-byte
+   * unchanged behaviour: the invite row is inserted, no mail is sent,
+   * and the return shape is preserved.
    *
-   * Defaults to the frozen `noopMailer` so the existing
-   * `accounts.invites.create` behaviour is preserved byte-for-byte:
-   * the invite row lands, but no mail is dispatched. MAIL-5 flips
-   * the production composition to inject `StubMailerClient`
-   * (local-dev) or `ResendMailerClient` (hosted) and adds the
-   * actual `mailer.sendInvite(...)` call site after the row insert.
+   * In production, MAIL-4's `resolveMailerFromEnv()` returns either
+   * `StubMailerClient` (local-dev → Inbucket / stdout) or
+   * `ResendMailerClient` (hosted → Resend HTTP API). Composition wires
+   * it in once at service boot.
    *
-   * This field intentionally lives here (handler-scope) rather than
-   * on `ActionContext` because:
-   *   - The mailer is part of the create-invite use case, not part
-   *     of the cross-cutting request context.
-   *   - Other handlers don't currently need a mailer; threading it
-   *     through `ActionContext` would force every handler to learn
-   *     about a concern that only invites care about.
-   *   - The DI pattern matches the existing `authzClient` / `dbClient`
-   *     fields and keeps the test surface narrow.
+   * Security contract (MAIL-5):
+   *   - When `ctx.actor?.kind === 'api_key'`, dispatch is SKIPPED
+   *     entirely (CMS-API-KEY-ACTOR-1 Story C parity). The invite row
+   *     still lands; only the side effect is short-circuited.
+   *   - On success: `email_sent_at = now()`, `email_attempts += 1`,
+   *     `last_email_error_code = NULL` (MAIL-3 columns).
+   *   - On `MailerError`: `email_attempts += 1`,
+   *     `last_email_error_code = error.code`. `email_sent_at` is NOT
+   *     touched.
+   *   - On any other thrown error: same as a `PROVIDER_UNAVAILABLE`
+   *     `MailerError` — never crashes the handler.
+   *   - The return shape is preserved byte-for-byte regardless of
+   *     dispatch outcome.
    */
   mailer?: MailerClient;
+  /**
+   * MAIL-5 — Base URL used to compose the invite link sent to the
+   * recipient. The mailer receives the fully-formed
+   * `${inviteBaseUrl}/invite/${token}` URL; the raw token never
+   * leaves this handler in any other path. Defaults to the
+   * `INVITE_BASE_URL` env var, then `http://localhost:3100` for
+   * local-dev parity with the auth-app's host port.
+   *
+   * Trailing slashes are stripped so callers can pass either
+   * `https://app.xynes.com` or `https://app.xynes.com/` without
+   * double-slashing the URL.
+   */
+  inviteBaseUrl?: string;
 };
+
+/**
+ * MAIL-5 — Resolve the canonical auth-app base URL for the invite
+ * link. The handler-scope `inviteBaseUrl` dep wins (test seam);
+ * `process.env.INVITE_BASE_URL` is next; the local-dev default
+ * (`http://localhost:3100`) is the last resort. Trailing slashes are
+ * stripped so the composed URL is never `…//invite/…`.
+ *
+ * Exported for unit tests. Internal API — not part of any public
+ * contract.
+ */
+export function resolveInviteBaseUrl(
+  injected: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const raw = injected ?? env.INVITE_BASE_URL ?? 'http://localhost:3100';
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return 'http://localhost:3100';
+  return trimmed.replace(/\/+$/, '');
+}
 
 export function createCreateWorkspaceInviteHandler({
   dbClient = db,
@@ -61,13 +100,15 @@ export function createCreateWorkspaceInviteHandler({
   tokenFactory = () => generateInviteToken(32),
   now = () => new Date(),
   expiresInDays = 7,
-  // MAIL-2 — `mailer` is part of `CreateWorkspaceInviteDependencies`
-  // (see field doc above) but intentionally NOT destructured in this
-  // story. MAIL-5 lands the actual `mailer.sendInvite(...)` call
-  // after the row insert and at that point will pick up the value
-  // from the destructure. Until then, accepting the field on the
-  // type but ignoring the runtime value preserves the 270-test
-  // baseline byte-for-byte.
+  // MAIL-5 — `mailer` is now destructured and used to dispatch the
+  // invite email after the row insert. Defaults to the frozen
+  // `noopMailer` so legacy callers (and the 270-test pre-MAIL-5
+  // baseline) see byte-for-byte unchanged behaviour: the invite row
+  // is inserted and the return shape is preserved.
+  mailer = noopMailer,
+  // MAIL-5 — Base URL for composing the invite link. See
+  // `resolveInviteBaseUrl` above.
+  inviteBaseUrl,
 }: CreateWorkspaceInviteDependencies = {}) {
   return async (
     payload: CreateWorkspaceInvitePayload,
@@ -167,6 +208,38 @@ export function createCreateWorkspaceInviteHandler({
       expiresAt,
     });
 
+    // ── MAIL-5 — Best-effort mailer dispatch ─────────────────────────
+    //
+    // The invite row has landed. The mailer is fire-and-forget from the
+    // handler's point of view: a thrown `MailerError` (or any other
+    // error) MUST NOT undo the row insert, and MUST NOT surface to the
+    // HTTP client as a 4xx/5xx envelope. Instead, the closed-set error
+    // code is written to `last_email_error_code` (MAIL-3 column) so an
+    // operator can re-dispatch via the new `accounts.invites.resend`
+    // action later.
+    //
+    // Skipped paths (kept side-effect-free so the legacy 270-test
+    // baseline continues to pass byte-for-byte):
+    //   - `mailer === noopMailer` — no real mailer was injected. Skips
+    //     the workspace + inviter lookups + the column UPDATE.
+    //   - `ctx.actor?.kind === 'api_key'` — API-key actor parity with
+    //     CMS-API-KEY-ACTOR-1 Story C. The invite row landed but we
+    //     never trigger a side effect on behalf of a machine credential.
+    if (mailer !== noopMailer && ctx.actor?.kind !== 'api_key') {
+      await dispatchInviteMail({
+        dbClient,
+        mailer,
+        inviteId,
+        workspaceId: ctx.workspaceId,
+        userId: ctx.userId,
+        emailNormalized,
+        token,
+        expiresAt,
+        inviteBaseUrl: resolveInviteBaseUrl(inviteBaseUrl),
+        now,
+      });
+    }
+
     return {
       id: inviteId,
       workspaceId: ctx.workspaceId,
@@ -177,6 +250,110 @@ export function createCreateWorkspaceInviteHandler({
       token,
     };
   };
+}
+
+/**
+ * MAIL-5 — Internal helper that resolves workspace + inviter
+ * metadata, calls `mailer.sendInvite`, and writes the MAIL-3 dispatch
+ * state columns. Factored out so the create handler stays readable
+ * and the test suite can target the dispatch logic in isolation.
+ *
+ * Never throws. Errors are caught locally and recorded in
+ * `last_email_error_code` — the invite row must remain usable for the
+ * caller, who still has the raw `token` for manual sharing.
+ */
+async function dispatchInviteMail(params: {
+  dbClient: typeof db;
+  mailer: MailerClient;
+  inviteId: string;
+  workspaceId: string;
+  userId: string;
+  emailNormalized: string;
+  token: string;
+  expiresAt: Date;
+  inviteBaseUrl: string;
+  now: () => Date;
+}): Promise<void> {
+  const {
+    dbClient,
+    mailer,
+    inviteId,
+    workspaceId,
+    userId,
+    emailNormalized,
+    token,
+    expiresAt,
+    inviteBaseUrl,
+    now,
+  } = params;
+  try {
+    // Resolve the workspace name + inviter display name in a single
+    // round-trip. The values feed the rendered template; missing rows
+    // surface as `TEMPLATE_RENDER_FAILED` (non-retryable) because we
+    // cannot send a meaningful invite without them.
+    const workspaceRows = await dbClient
+      .select({ name: workspaces.name })
+      .from(workspaces)
+      .where(eq(workspaces.id, workspaceId))
+      .limit(1);
+    const workspaceName = workspaceRows[0]?.name;
+    if (typeof workspaceName !== 'string' || workspaceName.length === 0) {
+      throw new MailerError('TEMPLATE_RENDER_FAILED');
+    }
+
+    const inviterRows = await dbClient
+      .select({ displayName: users.displayName })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    // `displayName` is nullable in identity.users — pass null through
+    // so the mailer template can render a sensible fallback (e.g.
+    // "Someone at <workspace>"). See `SendInviteInput.inviterName`.
+    const inviterName = inviterRows[0]?.displayName ?? null;
+
+    const inviteUrl = `${inviteBaseUrl}/invite/${token}`;
+
+    await mailer.sendInvite({
+      to: emailNormalized,
+      inviterName,
+      workspaceName,
+      inviteUrl,
+      expiresAt: expiresAt.toISOString(),
+    });
+
+    // Success path — bump email_attempts and stamp email_sent_at,
+    // clear any previous error code.
+    await dbClient
+      .update(workspaceInvites)
+      .set({
+        emailSentAt: now(),
+        emailAttempts: sql`${workspaceInvites.emailAttempts} + 1`,
+        lastEmailErrorCode: null,
+      })
+      .where(eq(workspaceInvites.id, inviteId));
+  } catch (error) {
+    // Failure path — record the closed-set `MailerError.code` on the
+    // row so the resend handler / operator can branch on it. The raw
+    // provider error text NEVER reaches this column (MAIL-2 contract:
+    // every implementation throws a `MailerError` with a fixed,
+    // sanitized message; any other thrown value is bucketed as a
+    // retryable `PROVIDER_UNAVAILABLE`).
+    const code = isMailerError(error) ? error.code : 'PROVIDER_UNAVAILABLE';
+    try {
+      await dbClient
+        .update(workspaceInvites)
+        .set({
+          emailAttempts: sql`${workspaceInvites.emailAttempts} + 1`,
+          lastEmailErrorCode: code,
+        })
+        .where(eq(workspaceInvites.id, inviteId));
+    } catch {
+      // Best-effort: a DB hiccup on the failure-path UPDATE must not
+      // crash the handler. The invite row is still usable; the next
+      // `accounts.invites.resend` will re-attempt and update the
+      // column at that point.
+    }
+  }
 }
 
 export const createWorkspaceInviteHandler = createCreateWorkspaceInviteHandler();
