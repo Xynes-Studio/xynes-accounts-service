@@ -296,73 +296,99 @@ export class ResendMailerClient implements MailerClient {
     });
 
     // ── HTTP POST to Resend ─────────────────────────────────────────────
+    //
+    // The AbortController + setTimeout pair is kept ALIVE through the
+    // response body read (success and error paths alike) so a Resend
+    // upstream (or any proxy in front of it) that ships headers and
+    // then stalls while streaming the body cannot hang `sendInvite`
+    // past `this.timeoutMs`. `fetch` resolves as soon as response
+    // headers are available; clearing the timer at that point would
+    // leave the subsequent `response.text()` / `response.json()` calls
+    // unbounded. We instead clear the timer in a single `finally` at
+    // the end of the whole HTTP sequence — see PR #17 Codex P2.
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    let response: Response;
     try {
-      response = await this.fetcher(RESEND_API_ENDPOINT, {
-        method: 'POST',
-        headers: {
-          // The ONLY place the raw API key reaches `fetch`. We do not
-          // log the headers object, and tests assert this header value
-          // never appears in any spy/log output.
-          Authorization: `Bearer ${this.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          from: this.fromAddress,
-          to: [input.to],
-          subject: subjectHeader,
-          text: textBody,
-        }),
-        signal: controller.signal,
-      });
-    } catch (err: unknown) {
-      // Network failures, AbortError on timeout, any non-Response throw.
-      // We MUST NOT inspect `err.message` for routing — provider error
-      // text could leak hostile substrings. Map everything to a
-      // closed-set retryable `PROVIDER_UNAVAILABLE`.
-      void err;
-      throw new MailerError('PROVIDER_UNAVAILABLE');
+      let response: Response;
+      try {
+        response = await this.fetcher(RESEND_API_ENDPOINT, {
+          method: 'POST',
+          headers: {
+            // The ONLY place the raw API key reaches `fetch`. We do not
+            // log the headers object, and tests assert this header value
+            // never appears in any spy/log output.
+            Authorization: `Bearer ${this.apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            from: this.fromAddress,
+            to: [input.to],
+            subject: subjectHeader,
+            text: textBody,
+          }),
+          signal: controller.signal,
+        });
+      } catch (err: unknown) {
+        // Network failures, AbortError on timeout, any non-Response throw.
+        // We MUST NOT inspect `err.message` for routing — provider error
+        // text could leak hostile substrings. Map everything to a
+        // closed-set retryable `PROVIDER_UNAVAILABLE`.
+        void err;
+        throw new MailerError('PROVIDER_UNAVAILABLE');
+      }
+
+      if (!response.ok) {
+        // Read the body to drain the socket (good citizenship for the
+        // underlying connection pool), but DISCARD the contents. We
+        // never propagate the body text to the caller. If the body
+        // read stalls past the deadline, the abort controller fires
+        // and turns the read into an AbortError which we swallow —
+        // the closed-set `MailerErrorCode` from the HTTP status is
+        // still surfaced to the caller.
+        try {
+          await response.text();
+        } catch {
+          // Body read errors are unimportant — the status code is the
+          // routing signal.
+        }
+        throw new MailerError(httpStatusToMailerCode(response.status));
+      }
+
+      // ── Parse the success envelope ──────────────────────────────────────
+      let parsed: unknown;
+      try {
+        parsed = await response.json();
+      } catch (err: unknown) {
+        // If the body read aborted because the timer fired (provider
+        // stalled streaming after a 2xx header), treat the whole
+        // attempt as a transient failure rather than synthesising a
+        // success messageId — the recipient may or may not have
+        // actually received the mail, and the resend handler should
+        // retry. Map every other parse failure (genuinely malformed
+        // JSON, empty body) to a synthetic messageId per the original
+        // contract: the HTTP 2xx already confirmed acceptance.
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          throw new MailerError('PROVIDER_UNAVAILABLE');
+        }
+        if (err instanceof Error && err.name === 'AbortError') {
+          throw new MailerError('PROVIDER_UNAVAILABLE');
+        }
+        return { messageId: this.idFactory() };
+      }
+      if (
+        parsed &&
+        typeof parsed === 'object' &&
+        'id' in parsed &&
+        typeof (parsed as ResendSuccessResponse).id === 'string' &&
+        (parsed as ResendSuccessResponse).id.length > 0
+      ) {
+        return { messageId: (parsed as ResendSuccessResponse).id };
+      }
+      // 2xx with no usable `id` — same posture as the json-parse failure.
+      return { messageId: this.idFactory() };
     } finally {
       clearTimeout(timer);
     }
-
-    if (!response.ok) {
-      // Read the body to drain the socket (good citizenship for the
-      // underlying connection pool), but DISCARD the contents. We
-      // never propagate the body text to the caller.
-      try {
-        await response.text();
-      } catch {
-        // Body read errors are unimportant — the status code is the
-        // routing signal.
-      }
-      throw new MailerError(httpStatusToMailerCode(response.status));
-    }
-
-    // ── Parse the success envelope ──────────────────────────────────────
-    let parsed: unknown;
-    try {
-      parsed = await response.json();
-    } catch {
-      // Resend's success envelope is small JSON. A parse failure means
-      // either the response is malformed (unlikely) or the body was
-      // already consumed. Either way we mint a synthetic messageId
-      // since the HTTP 2xx already confirmed acceptance.
-      return { messageId: this.idFactory() };
-    }
-    if (
-      parsed &&
-      typeof parsed === 'object' &&
-      'id' in parsed &&
-      typeof (parsed as ResendSuccessResponse).id === 'string' &&
-      (parsed as ResendSuccessResponse).id.length > 0
-    ) {
-      return { messageId: (parsed as ResendSuccessResponse).id };
-    }
-    // 2xx with no usable `id` — same posture as the json-parse failure.
-    return { messageId: this.idFactory() };
   }
 }
 

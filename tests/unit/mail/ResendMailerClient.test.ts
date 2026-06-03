@@ -507,7 +507,7 @@ describe('ResendMailerClient — network / timeout', () => {
 
   it('aborts the fetch after the configured timeout (small timeoutMs)', async () => {
     let abortSignalReceived: AbortSignal | undefined;
-    const spy = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+    const spy = (async (_url: string | URL, init?: RequestInit) => {
       abortSignalReceived = init?.signal ?? undefined;
       // Wait long enough for the controller to abort, then surface
       // whatever the abort produced.
@@ -531,6 +531,192 @@ describe('ResendMailerClient — network / timeout', () => {
     } catch (err) {
       expect((err as MailerError).code).toBe('PROVIDER_UNAVAILABLE');
       expect(abortSignalReceived?.aborted).toBe(true);
+    }
+  });
+
+  // ── PR #17 Codex P2 regression: timeout active through body reads ─────
+  //
+  // `fetch` resolves as soon as response headers are available. If the
+  // upstream (Resend or any proxy) ships headers and then stalls while
+  // streaming the body, clearing the abort timer at that point leaves
+  // `response.text()` / `response.json()` unbounded. The fix keeps the
+  // controller + timer alive through the whole HTTP sequence and clears
+  // them in a single trailing `finally`. The tests below pin that
+  // contract on both the 2xx success path (body.json()) and the non-2xx
+  // error path (body.text() drain).
+
+  it('PR #17 Codex P2: aborts a 2xx body that stalls while streaming JSON', async () => {
+    // Build a Response whose `json()` never resolves on its own but
+    // throws an AbortError as soon as the injected signal aborts.
+    let receivedSignal: AbortSignal | undefined;
+    const stallingResponse = {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: new Headers(),
+      redirected: false,
+      type: 'default',
+      url: RESEND_API_ENDPOINT,
+      body: null,
+      bodyUsed: false,
+      async text(): Promise<string> {
+        await new Promise<void>((_resolve, reject) => {
+          if (receivedSignal?.aborted) {
+            const e = new Error('aborted');
+            e.name = 'AbortError';
+            reject(e);
+            return;
+          }
+          receivedSignal?.addEventListener('abort', () => {
+            const e = new Error('aborted');
+            e.name = 'AbortError';
+            reject(e);
+          });
+        });
+        return '';
+      },
+      async json(): Promise<unknown> {
+        await new Promise<void>((_resolve, reject) => {
+          if (receivedSignal?.aborted) {
+            const e = new Error('aborted');
+            e.name = 'AbortError';
+            reject(e);
+            return;
+          }
+          receivedSignal?.addEventListener('abort', () => {
+            const e = new Error('aborted');
+            e.name = 'AbortError';
+            reject(e);
+          });
+        });
+        return {};
+      },
+      clone(): Response {
+        return stallingResponse as unknown as Response;
+      },
+      async arrayBuffer(): Promise<ArrayBuffer> {
+        return new ArrayBuffer(0);
+      },
+      async blob(): Promise<Blob> {
+        return new Blob();
+      },
+      async formData(): Promise<FormData> {
+        return new FormData();
+      },
+      async bytes(): Promise<Uint8Array> {
+        return new Uint8Array(0);
+      },
+    } as unknown as Response;
+
+    const spy = (async (_url: string | URL, init?: RequestInit) => {
+      // Capture the controller's signal so the stalling body methods
+      // can observe the abort. `fetch` is allowed to resolve normally
+      // (mimics "headers OK, body streaming") — the timeout fires
+      // while we await the body parse.
+      receivedSignal = init?.signal ?? undefined;
+      return stallingResponse;
+    }) as typeof fetch;
+
+    const client = new ResendMailerClient({
+      apiKey: VALID_RESEND_KEY,
+      fromAddress: FROM_ADDRESS,
+      fetcher: spy,
+      timeoutMs: 20,
+    });
+
+    const started = Date.now();
+    try {
+      await client.sendInvite(HAPPY_INPUT);
+      throw new Error('expected MailerError from stalled body');
+    } catch (err) {
+      const elapsed = Date.now() - started;
+      expect((err as MailerError).code).toBe('PROVIDER_UNAVAILABLE');
+      // The whole call MUST resolve within roughly the configured
+      // timeout, not hang indefinitely. We allow a generous upper
+      // bound for slow CI but the original bug would never resolve
+      // at all.
+      expect(elapsed).toBeLessThan(500);
+      // The controller's signal observed the abort.
+      expect(receivedSignal?.aborted).toBe(true);
+    }
+  });
+
+  it('PR #17 Codex P2: aborts an error-path body drain that stalls', async () => {
+    // Same shape, non-2xx status. The body drain (response.text()) is
+    // wrapped in `try { … } catch {}` inside the production code, so
+    // the abort during the drain MUST NOT propagate; the closed-set
+    // `MailerErrorCode` from the HTTP status is still surfaced.
+    let receivedSignal: AbortSignal | undefined;
+    const stallingResponse = {
+      ok: false,
+      status: 503,
+      statusText: 'Service Unavailable',
+      headers: new Headers(),
+      redirected: false,
+      type: 'default',
+      url: RESEND_API_ENDPOINT,
+      body: null,
+      bodyUsed: false,
+      async text(): Promise<string> {
+        await new Promise<void>((_resolve, reject) => {
+          if (receivedSignal?.aborted) {
+            const e = new Error('aborted');
+            e.name = 'AbortError';
+            reject(e);
+            return;
+          }
+          receivedSignal?.addEventListener('abort', () => {
+            const e = new Error('aborted');
+            e.name = 'AbortError';
+            reject(e);
+          });
+        });
+        return '';
+      },
+      async json(): Promise<unknown> {
+        return {};
+      },
+      clone(): Response {
+        return stallingResponse as unknown as Response;
+      },
+      async arrayBuffer(): Promise<ArrayBuffer> {
+        return new ArrayBuffer(0);
+      },
+      async blob(): Promise<Blob> {
+        return new Blob();
+      },
+      async formData(): Promise<FormData> {
+        return new FormData();
+      },
+      async bytes(): Promise<Uint8Array> {
+        return new Uint8Array(0);
+      },
+    } as unknown as Response;
+
+    const spy = (async (_url: string | URL, init?: RequestInit) => {
+      receivedSignal = init?.signal ?? undefined;
+      return stallingResponse;
+    }) as typeof fetch;
+
+    const client = new ResendMailerClient({
+      apiKey: VALID_RESEND_KEY,
+      fromAddress: FROM_ADDRESS,
+      fetcher: spy,
+      timeoutMs: 20,
+    });
+
+    const started = Date.now();
+    try {
+      await client.sendInvite(HAPPY_INPUT);
+      throw new Error('expected MailerError from stalled error body');
+    } catch (err) {
+      const elapsed = Date.now() - started;
+      // 503 maps to PROVIDER_UNAVAILABLE via the closed-set status
+      // mapping; the abort during body drain does NOT change the
+      // surfaced code (it is swallowed by the inner try/catch).
+      expect((err as MailerError).code).toBe('PROVIDER_UNAVAILABLE');
+      expect(elapsed).toBeLessThan(500);
+      expect(receivedSignal?.aborted).toBe(true);
     }
   });
 });
