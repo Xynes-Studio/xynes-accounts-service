@@ -417,4 +417,166 @@ describe('MAIL-5 — createCreateWorkspaceInviteHandler mail dispatch', () => {
       expect(Object.keys(patch).join('|')).not.toContain('SUPER-SECRET-RAW-TOKEN');
     });
   });
+
+  describe('M1 regression — success-then-DB-fail does not corrupt lastEmailErrorCode', () => {
+    /**
+     * MAIL-5 follow-up (Codex P2 + my M1 fix).
+     *
+     * Before the fix, the single outer try/catch in `dispatchInviteMail`
+     * covered BOTH `mailer.sendInvite` AND the success-path UPDATE.
+     * If the mailer SUCCEEDED but the success-path UPDATE then threw
+     * (DB hiccup AFTER mail sent), the outer catch wrote
+     * `lastEmailErrorCode = PROVIDER_UNAVAILABLE` on a row whose mail
+     * was actually delivered. The resend handler would then think
+     * dispatch failed and let the operator trigger a duplicate mail.
+     *
+     * After the fix, the success-path UPDATE is wrapped in its own
+     * try/catch. A DB failure there is swallowed without corrupting
+     * `lastEmailErrorCode`. The row stays in its pre-send state
+     * (`emailSentAt = NULL`, `lastEmailErrorCode = NULL`) — the operator
+     * may trigger a duplicate dispatch via resend, which is acceptable
+     * per the documented fire-and-forget posture.
+     */
+
+    /**
+     * Build a dbClient mock whose UPDATEs throw conditionally.
+     *
+     * `failFirstUpdate=true` simulates the M1 failure mode: the FIRST
+     * UPDATE call throws, subsequent UPDATEs succeed. Pre-fix code
+     * would catch that throw, fall into the failure-path UPDATE, and
+     * call it a `PROVIDER_UNAVAILABLE` MailerError. Post-fix code
+     * catches the throw in the SUCCESS-path inner try and never falls
+     * into the failure handler — so no spurious closed-set code is
+     * written.
+     */
+    function makeDbClientWithUpdatePolicy(opts: {
+      workspaceRow?: { name: string } | null;
+      inviterRow?: { displayName: string | null } | null;
+      failFirstUpdate?: boolean;
+    }) {
+      const inserted: any[] = [];
+      const updates: any[] = [];
+      const throwsOnUpdate: boolean[] = [];
+
+      const workspaceRow = 'workspaceRow' in opts ? opts.workspaceRow : { name: 'Acme' };
+      const inviterRow = 'inviterRow' in opts ? opts.inviterRow : { displayName: 'Alice' };
+      let updateCallNo = 0;
+
+      const dbClient: any = {
+        select: () => {
+          let currentFromTable: unknown = null;
+          const fromChain = {
+            from: (table: unknown) => {
+              currentFromTable = table;
+              return chain;
+            },
+          };
+          const chain = {
+            innerJoin: () => ({ where: () => ({ limit: async () => [] }) }),
+            where: () => ({
+              limit: async () => {
+                if (currentFromTable === workspaces) {
+                  return workspaceRow === null ? [] : [workspaceRow];
+                }
+                return inviterRow === null ? [] : [inviterRow];
+              },
+            }),
+          };
+          return fromChain;
+        },
+        insert: () => ({
+          values: async (row: any) => {
+            inserted.push(row);
+          },
+        }),
+        update: () => ({
+          set: (patch: any) => ({
+            where: async () => {
+              updateCallNo += 1;
+              if (opts.failFirstUpdate && updateCallNo === 1) {
+                throwsOnUpdate.push(true);
+                throw new Error('simulated DB UPDATE failure on success path');
+              }
+              throwsOnUpdate.push(false);
+              updates.push(patch);
+              return undefined;
+            },
+          }),
+        }),
+      };
+      return { dbClient, inserted, updates, throwsOnUpdate };
+    }
+
+    it('success-path UPDATE failure does NOT bucket as PROVIDER_UNAVAILABLE', async () => {
+      const { dbClient, updates, throwsOnUpdate } = makeDbClientWithUpdatePolicy({
+        failFirstUpdate: true,
+      });
+      let mailerCallCount = 0;
+      const mailer: MailerClient = {
+        sendInvite: async () => {
+          mailerCallCount += 1;
+          return { messageId: 'really-sent' };
+        },
+      };
+      const handler = createCreateWorkspaceInviteHandler({
+        dbClient,
+        authzClient: makeAuthz(true),
+        idFactory: () => 'invite-m1',
+        tokenFactory: () => ({ token: 'raw', tokenHash: 'hash' }),
+        now: () => new Date('2025-01-01T00:00:00.000Z'),
+        mailer,
+      });
+
+      // Handler MUST still return the canonical shape (the documented
+      // "fire-and-forget — never throw to the HTTP client" invariant).
+      const result = await handler(
+        { email: 'invitee@example.com', roleKey: 'workspace_member' },
+        authedCtx as any,
+      );
+      expect(result.id).toBe('invite-m1');
+      expect(result.token).toBe('raw');
+
+      // Mailer was invoked exactly once — the mail was actually sent.
+      expect(mailerCallCount).toBe(1);
+
+      // Behaviour check: the FIRST UPDATE call threw (the success-path
+      // UPDATE). The CURRENT (post-fix) code catches that throw in its
+      // own inner try and does NOT fall into the failure-path UPDATE,
+      // so NO spurious closed-set code is written. updates[] is empty
+      // because every UPDATE attempted in this test threw.
+      expect(throwsOnUpdate[0]).toBe(true);
+      // No spurious PROVIDER_UNAVAILABLE landed.
+      for (const patch of updates) {
+        expect(patch.lastEmailErrorCode).not.toBe('PROVIDER_UNAVAILABLE');
+      }
+    });
+
+    it('mailer failure path still records the closed-set MailerError.code (unchanged behaviour)', async () => {
+      // The M1 fix only scopes the SUCCESS-path UPDATE. The
+      // mailer-failure path is unchanged: a thrown MailerError still
+      // routes to the failure-path UPDATE that records the closed-set
+      // code. This test guards that the M1 refactor did not regress
+      // the existing failure-path semantics.
+      const { dbClient, updates } = makeDbClientWithUpdatePolicy({ failFirstUpdate: false });
+      const mailer: MailerClient = {
+        sendInvite: async () => {
+          throw new MailerError('RECIPIENT_INVALID');
+        },
+      };
+      const handler = createCreateWorkspaceInviteHandler({
+        dbClient,
+        authzClient: makeAuthz(true),
+        idFactory: () => 'invite-m1b',
+        tokenFactory: () => ({ token: 'raw', tokenHash: 'hash' }),
+        now: () => new Date('2025-01-01T00:00:00.000Z'),
+        mailer,
+      });
+      await handler(
+        { email: 'invitee@example.com', roleKey: 'workspace_member' },
+        authedCtx as any,
+      );
+      expect(updates).toHaveLength(1);
+      expect(updates[0].lastEmailErrorCode).toBe('RECIPIENT_INVALID');
+    });
+  });
 });

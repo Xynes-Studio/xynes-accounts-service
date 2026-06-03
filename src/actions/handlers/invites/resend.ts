@@ -251,9 +251,56 @@ export function createResendWorkspaceInviteHandler({
     const baseUrl = resolveInviteBaseUrl(inviteBaseUrl);
     const inviteUrl = `${baseUrl}/invite/${token}`;
 
-    // Best-effort mailer dispatch. We bump `email_attempts` on BOTH
-    // paths (success and failure) so the rate-limit counter cannot
-    // be defeated by a permanently-failing recipient address.
+    // ── Codex P2 fix: persist-before-send ─────────────────────────
+    //
+    // We persist the rotated token hash + bump `email_attempts` + stamp
+    // `email_sent_at` BEFORE calling `mailer.sendInvite`. Rationale:
+    //
+    //   - If the UPDATE fails or returns 0 rows (e.g. row vanished
+    //     due to concurrent expiration sweep), `mailer.sendInvite` is
+    //     NEVER called. The recipient cannot end up holding a fresh
+    //     invite URL whose hash is not in the DB.
+    //   - The optimistic `emailSentAt = now()` is corrected by a
+    //     compensating UPDATE below when the mailer throws — we clear
+    //     `emailSentAt` back to NULL and record the closed-set
+    //     `MailerError.code` in `lastEmailErrorCode`. The compensating
+    //     UPDATE does NOT bump `email_attempts` again (we already
+    //     bumped it on the first UPDATE so the rate-limit counter
+    //     stays correct) and does NOT touch `token` (old hash is
+    //     already destroyed; rotating again would create a third
+    //     hash unrelated to anything we emailed).
+    //   - If the compensating UPDATE itself fails (DB hiccup), we
+    //     swallow — the row reports `emailSentAt` populated but the
+    //     recipient may have received nothing. That's recoverable via
+    //     a follow-up `accounts.invites.resend`, which is exactly the
+    //     fire-and-forget posture documented in MAIL-2.
+    const optimisticPatch = {
+      token: tokenHash,
+      emailSentAt: now(),
+      emailAttempts: sql`${workspaceInvites.emailAttempts} + 1`,
+      lastEmailErrorCode: null,
+    };
+
+    const updatedRows = await dbClient
+      .update(workspaceInvites)
+      .set(optimisticPatch)
+      .where(eq(workspaceInvites.id, invite.id))
+      .returning({
+        emailSentAt: workspaceInvites.emailSentAt,
+        emailAttempts: workspaceInvites.emailAttempts,
+        lastEmailErrorCode: workspaceInvites.lastEmailErrorCode,
+      });
+
+    const updated = updatedRows[0];
+    if (!updated) {
+      // The row vanished between SELECT and UPDATE (e.g. concurrent
+      // expiration sweep). Treat as not found so we don't expose a
+      // 5xx for a benign race. Mailer was NEVER called — no leaked
+      // URL.
+      throw new DomainError('Workspace invite not found', 'NOT_FOUND', 404);
+    }
+
+    // Now that the rotated hash is committed, dispatch the email.
     let resultCode: string | null = null;
     try {
       await mailer.sendInvite({
@@ -268,48 +315,52 @@ export function createResendWorkspaceInviteHandler({
       resultCode = isMailerError(error) ? error.code : 'PROVIDER_UNAVAILABLE';
     }
 
-    // Atomic UPDATE: rotate the token hash AND record the dispatch
-    // state. If the mailer succeeded, stamp `email_sent_at` and
-    // clear the error code; if it failed, record the closed-set
-    // code but still rotate the token (the old hash is destroyed
-    // regardless so old links die).
-    const updatePatch =
-      resultCode === null
-        ? {
-            token: tokenHash,
-            emailSentAt: now(),
-            emailAttempts: sql`${workspaceInvites.emailAttempts} + 1`,
-            lastEmailErrorCode: null,
-          }
-        : {
-            token: tokenHash,
-            emailAttempts: sql`${workspaceInvites.emailAttempts} + 1`,
+    // Compensating UPDATE for the mailer-failure path. Clears
+    // `emailSentAt` back to NULL and stamps the closed-set error code.
+    // Does NOT bump `email_attempts` again (already bumped above) and
+    // does NOT rotate the token (old hash is already destroyed). If
+    // this compensating UPDATE itself throws (DB hiccup), swallow —
+    // the row reports `emailSentAt` populated but is otherwise
+    // consistent; a follow-up resend will fix it.
+    let returnedEmailSentAt: Date | null = updated.emailSentAt;
+    let returnedLastEmailErrorCode: string | null = updated.lastEmailErrorCode;
+    if (resultCode !== null) {
+      try {
+        const compensatedRows = await dbClient
+          .update(workspaceInvites)
+          .set({
+            emailSentAt: null,
             lastEmailErrorCode: resultCode,
-          };
-
-    const updatedRows = await dbClient
-      .update(workspaceInvites)
-      .set(updatePatch)
-      .where(eq(workspaceInvites.id, invite.id))
-      .returning({
-        emailSentAt: workspaceInvites.emailSentAt,
-        emailAttempts: workspaceInvites.emailAttempts,
-        lastEmailErrorCode: workspaceInvites.lastEmailErrorCode,
-      });
-
-    const updated = updatedRows[0];
-    if (!updated) {
-      // The row vanished between SELECT and UPDATE (e.g. concurrent
-      // expiration sweep). Treat as not found so we don't expose a
-      // 5xx for a benign race.
-      throw new DomainError('Workspace invite not found', 'NOT_FOUND', 404);
+          })
+          .where(eq(workspaceInvites.id, invite.id))
+          .returning({
+            emailSentAt: workspaceInvites.emailSentAt,
+            lastEmailErrorCode: workspaceInvites.lastEmailErrorCode,
+          });
+        const compensated = compensatedRows[0];
+        if (compensated) {
+          returnedEmailSentAt = compensated.emailSentAt;
+          returnedLastEmailErrorCode = compensated.lastEmailErrorCode;
+        } else {
+          // Row vanished AFTER our optimistic UPDATE landed. Report
+          // what we know — the optimistic state is in the caller's
+          // hand and the row is gone.
+          returnedLastEmailErrorCode = resultCode;
+        }
+      } catch {
+        // DB hiccup on the compensating UPDATE — swallow. Return the
+        // optimistic state to the caller; the closed-set code is
+        // surfaced in-memory so the operator can see the failure even
+        // if it didn't land in the column.
+        returnedLastEmailErrorCode = resultCode;
+      }
     }
 
     return {
       inviteId: invite.id,
       emailAttempts: updated.emailAttempts,
-      emailSentAt: updated.emailSentAt ? updated.emailSentAt.toISOString() : null,
-      lastEmailErrorCode: updated.lastEmailErrorCode,
+      emailSentAt: returnedEmailSentAt ? returnedEmailSentAt.toISOString() : null,
+      lastEmailErrorCode: returnedLastEmailErrorCode,
     };
   };
 }

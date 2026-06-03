@@ -236,12 +236,30 @@ describe('MAIL-5 — accounts.invites.resend', () => {
         tokenFactory: () => ({ token: 'raw', tokenHash: 'hash' }),
       });
       const result = await handler({ inviteId: 'invite-1' }, authedCtx as any);
-      // Token STILL rotated — old hash is destroyed even on failure
-      // (the old link must die regardless of dispatch outcome).
+
+      // Codex P2 fix: persist-before-send means we issue TWO updates
+      // on the failure path. updates[0] is the optimistic UPDATE that
+      // rotated the token + stamped emailSentAt; updates[1] is the
+      // compensating UPDATE that records the closed-set code AND
+      // clears emailSentAt back to NULL.
+      expect(updates).toHaveLength(2);
+
+      // updates[0] — optimistic: rotated token, stamped emailSentAt,
+      // cleared any previous lastEmailErrorCode.
       expect(updates[0].token).toBe('hash');
-      // Closed-set code recorded.
-      expect(updates[0].lastEmailErrorCode).toBe('RECIPIENT_INVALID');
-      expect(updates[0]).not.toHaveProperty('emailSentAt');
+      expect(updates[0]).toHaveProperty('emailSentAt');
+      expect(updates[0].lastEmailErrorCode).toBe(null);
+
+      // updates[1] — compensating: closed-set code recorded, emailSentAt
+      // cleared, token NOT touched (already rotated above), email_attempts
+      // NOT bumped again (already bumped on the optimistic UPDATE so the
+      // rate-limit counter stays correct).
+      expect(updates[1].lastEmailErrorCode).toBe('RECIPIENT_INVALID');
+      expect(updates[1].emailSentAt).toBe(null);
+      expect(updates[1]).not.toHaveProperty('token');
+      expect(updates[1]).not.toHaveProperty('emailAttempts');
+
+      // Caller-facing result reflects the compensated state.
       expect(result.lastEmailErrorCode).toBe('RECIPIENT_INVALID');
       expect(result.emailSentAt).toBe(null);
     });
@@ -267,14 +285,30 @@ describe('MAIL-5 — accounts.invites.resend', () => {
         tokenFactory: () => ({ token: 'raw', tokenHash: 'hash' }),
       });
       const result = await handler({ inviteId: 'invite-1' }, authedCtx as any);
-      expect(updates[0].lastEmailErrorCode).toBe('PROVIDER_UNAVAILABLE');
+
+      // Codex P2 fix: failure path runs the compensating UPDATE.
+      // updates[0] is optimistic (lastEmailErrorCode === null);
+      // updates[1] is the compensating UPDATE carrying the closed-set
+      // code.
+      expect(updates).toHaveLength(2);
+      expect(updates[0].lastEmailErrorCode).toBe(null);
+      expect(updates[1].lastEmailErrorCode).toBe('PROVIDER_UNAVAILABLE');
       expect(result.lastEmailErrorCode).toBe('PROVIDER_UNAVAILABLE');
     });
 
     it('returns NOT_FOUND when the UPDATE row vanishes between SELECT and UPDATE', async () => {
       const { dbClient } = makeDbClient({ updatedRow: null });
+      // Codex P2 regression guard: when the optimistic UPDATE returns
+      // 0 rows (row vanished), the mailer MUST NOT be called.
+      // Otherwise the recipient would hold a fresh invite URL whose
+      // hash is not in the DB (the persist-after-send anti-pattern
+      // that the Codex P2 finding flagged).
+      let mailerCallCount = 0;
       const mailer: MailerClient = {
-        sendInvite: async () => ({ messageId: 'ok' }),
+        sendInvite: async () => {
+          mailerCallCount += 1;
+          return { messageId: 'should-not-fire' };
+        },
       };
       const handler = createResendWorkspaceInviteHandler({
         dbClient,
@@ -291,6 +325,9 @@ describe('MAIL-5 — accounts.invites.resend', () => {
       }
       expect(caught).toBeInstanceOf(DomainError);
       expect((caught as DomainError).code).toBe('NOT_FOUND');
+      // Codex P2 regression guard: the mailer MUST NOT be called when
+      // the optimistic UPDATE returns 0 rows. No leaked URL.
+      expect(mailerCallCount).toBe(0);
     });
   });
 

@@ -321,16 +321,31 @@ async function dispatchInviteMail(params: {
       expiresAt: expiresAt.toISOString(),
     });
 
-    // Success path — bump email_attempts and stamp email_sent_at,
-    // clear any previous error code.
-    await dbClient
-      .update(workspaceInvites)
-      .set({
-        emailSentAt: now(),
-        emailAttempts: sql`${workspaceInvites.emailAttempts} + 1`,
-        lastEmailErrorCode: null,
-      })
-      .where(eq(workspaceInvites.id, inviteId));
+    // ── Codex P2 / M1 fix: scope the success-path UPDATE in its own
+    // try/catch so a DB hiccup AFTER successful mail send does NOT
+    // bucket as a `PROVIDER_UNAVAILABLE` MailerError. The mail was
+    // actually delivered; corrupting `lastEmailErrorCode` here would
+    // lie about delivery status and trigger a duplicate dispatch on
+    // the next `accounts.invites.resend`. Best-effort: a DB hiccup
+    // means `emailSentAt` stays NULL and the operator may re-trigger
+    // a duplicate dispatch, but `lastEmailErrorCode` correctly stays
+    // NULL signaling "no closed-set error occurred".
+    try {
+      await dbClient
+        .update(workspaceInvites)
+        .set({
+          emailSentAt: now(),
+          emailAttempts: sql`${workspaceInvites.emailAttempts} + 1`,
+          lastEmailErrorCode: null,
+        })
+        .where(eq(workspaceInvites.id, inviteId));
+    } catch {
+      // Mail was sent; DB write failed. Leave the row as-is rather
+      // than write a misleading `lastEmailErrorCode`. The operator
+      // who hits resend later will see the row in its pre-send state
+      // and (worst case) trigger a duplicate dispatch — acceptable
+      // per MAIL-2's fire-and-forget posture.
+    }
   } catch (error) {
     // Failure path — record the closed-set `MailerError.code` on the
     // row so the resend handler / operator can branch on it. The raw
