@@ -810,7 +810,11 @@ describe('ResendMailerClient — pure helpers via __forTesting__', () => {
     });
     expect(out).toContain('Bob has invited you to join Beta on Xynes.');
     expect(out).toContain('http://example/invite/x');
-    expect(out).toContain('2026-06-09T12:00:00.000Z');
+    // 2026-06-03 polish: expiresAt is formatted via Intl ('en-US', UTC) into
+    // 'Month D, YYYY' for human readability. Raw ISO is intentionally NOT
+    // present in the rendered body.
+    expect(out).toContain('June 9, 2026');
+    expect(out).not.toContain('2026-06-09T12:00:00.000Z');
   });
 
   it('composeTextBody falls back to passive voice when inviterName is null', () => {
@@ -822,6 +826,87 @@ describe('ResendMailerClient — pure helpers via __forTesting__', () => {
     });
     expect(out).toContain("You've been invited to join Beta on Xynes.");
     expect(out).not.toContain('has invited you');
+  });
+
+  // 2026-06-03 polish: structure invariants the polished body must preserve.
+  it('composeTextBody carries the polished structure markers', () => {
+    const out = __forTesting__.composeTextBody({
+      inviterName: 'Alice',
+      workspaceName: 'Acme',
+      inviteUrl: 'https://example/invite/xyz',
+      expiresAt: '2026-06-10T00:00:00.000Z',
+    });
+    // Friendly greeting.
+    expect(out).toMatch(/^Hi,\n/);
+    // Clear CTA line precedes the URL.
+    expect(out).toContain('Click the link below to accept the invitation:');
+    // Indented URL is the actionable line (4-space indent, mail-clients
+    // commonly auto-link absolute URLs even when not indented; the indent
+    // keeps the URL visually distinct from the surrounding prose).
+    expect(out).toContain('    https://example/invite/xyz');
+    // Expiry rendered human-readable.
+    expect(out).toContain('This invitation expires on June 10, 2026.');
+    // Horizontal separator before the legal/ignore footer.
+    expect(out).toContain('----------------------------------------');
+    // Safe-to-ignore copy still present (existing security/UX invariant).
+    expect(out).toContain('you can safely ignore this message');
+    // Signoff.
+    expect(out).toContain('— The Xynes team');
+  });
+
+  it('composeTextBody does NOT carry HTML / scripting / external resources', () => {
+    const out = __forTesting__.composeTextBody({
+      inviterName: 'Eve',
+      workspaceName: 'Acme',
+      inviteUrl: 'https://example/invite/xyz',
+      expiresAt: '2026-06-10T00:00:00.000Z',
+    });
+    // Level-A (plaintext) MUST not carry any HTML markers injected BY THE
+    // COMPOSER itself — defense in depth against a future Resend payload
+    // that auto-wraps `text` into a `<pre>` with the body content. User
+    // input that smuggles HTML chars is a separate concern (covered by the
+    // next test) and is intentionally passed through verbatim because
+    // plaintext does NOT need escaping.
+    expect(out).not.toContain('<html');
+    expect(out).not.toContain('<body');
+    expect(out).not.toContain('<a ');
+    expect(out).not.toContain('<script');
+    expect(out).not.toContain('href=');
+    expect(out).not.toContain('style=');
+  });
+
+  it('composeTextBody passes through user-supplied workspace text verbatim (plaintext, no escape)', () => {
+    // Plaintext does NOT escape HTML chars — that would be misleading.
+    // The recipient's mail client renders the body as text so a smuggled
+    // `<script>` is rendered literally, not executed. The composer's only
+    // sanitisation duty is CR/LF/TAB injection (handled by the caller's
+    // sanitiseHeaderValue, which preserves '<' '>' '&'). This test pins
+    // that expectation so a future change cannot silently introduce
+    // HTML escaping that would corrupt legitimate workspace names like
+    // 'A&B Co.' or 'foo <legacy>'.
+    const out = __forTesting__.composeTextBody({
+      inviterName: 'Eve',
+      workspaceName: 'Hostile<script>',
+      inviteUrl: 'https://example/invite/xyz',
+      expiresAt: '2026-06-10T00:00:00.000Z',
+    });
+    expect(out).toContain('Eve has invited you to join Hostile<script> on Xynes.');
+  });
+
+  // 2026-06-03 polish: formatExpiryForBody locale + fallback invariants.
+  it('formatExpiryForBody renders ISO timestamps in en-US UTC long-date shape', () => {
+    expect(__forTesting__.formatExpiryForBody('2026-06-10T00:00:00.000Z')).toBe('June 10, 2026');
+    // Late-evening UTC stays on the same day because the formatter pins UTC.
+    expect(__forTesting__.formatExpiryForBody('2026-06-10T23:59:59.000Z')).toBe('June 10, 2026');
+    // Early-morning UTC is the same day, irrespective of host TZ.
+    expect(__forTesting__.formatExpiryForBody('2026-06-10T00:00:01.000Z')).toBe('June 10, 2026');
+  });
+
+  it('formatExpiryForBody falls back to the raw value when input is unparseable', () => {
+    expect(__forTesting__.formatExpiryForBody('not-a-date')).toBe('not-a-date');
+    expect(__forTesting__.formatExpiryForBody('')).toBe('');
+    // Pre-formatted dates should pass through cleanly (defensive).
+    expect(__forTesting__.formatExpiryForBody('June 1, 2026')).toBe('June 1, 2026');
   });
 
   it('isProbablyValidResendKey is a closed-set predicate', () => {
