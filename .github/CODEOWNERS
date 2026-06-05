@@ -1,0 +1,12 @@
+# Default reviewers for everything
+*                          @REPLACE_WITH_PLATFORM_TEAM
+
+# Specific paths (uncomment what applies)
+# /src/actions/handlers/integrations/  @REPLACE_WITH_SECURITY_TEAM
+# /src/actions/handlers/invites/       @REPLACE_WITH_SECURITY_TEAM
+# /src/infra/mail/                     @REPLACE_WITH_SECURITY_TEAM
+# /src/infra/secrets/                  @REPLACE_WITH_SECURITY_TEAM
+# /src/infra/db/schema.ts              @REPLACE_WITH_DB_TEAM
+# /drizzle/                            @REPLACE_WITH_DB_TEAM
+# /src/log-redaction.ts                @REPLACE_WITH_SECURITY_TEAM
+# /.github/                            @REPLACE_WITH_PLATFORM_TEAM
