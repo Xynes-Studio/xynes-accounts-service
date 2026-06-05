@@ -1,12 +1,12 @@
 # Default reviewers for everything
-*                          @REPLACE_WITH_PLATFORM_TEAM
+*                          @archan96
 
 # Specific paths (uncomment what applies)
-# /src/actions/handlers/integrations/  @REPLACE_WITH_SECURITY_TEAM
-# /src/actions/handlers/invites/       @REPLACE_WITH_SECURITY_TEAM
-# /src/infra/mail/                     @REPLACE_WITH_SECURITY_TEAM
-# /src/infra/secrets/                  @REPLACE_WITH_SECURITY_TEAM
-# /src/infra/db/schema.ts              @REPLACE_WITH_DB_TEAM
-# /drizzle/                            @REPLACE_WITH_DB_TEAM
-# /src/log-redaction.ts                @REPLACE_WITH_SECURITY_TEAM
-# /.github/                            @REPLACE_WITH_PLATFORM_TEAM
+# /src/actions/handlers/integrations/  @archan96
+# /src/actions/handlers/invites/       @archan96
+# /src/infra/mail/                     @archan96
+# /src/infra/secrets/                  @archan96
+# /src/infra/db/schema.ts              @archan96
+# /drizzle/                            @archan96
+# /src/log-redaction.ts                @archan96
+# /.github/                            @archan96
