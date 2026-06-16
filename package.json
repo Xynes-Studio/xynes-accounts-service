@@ -22,6 +22,8 @@
     "test:coverage": "bun run scripts/run-with-env.ts run scripts/test-coverage-gate.ts",
     "lint": "eslint 'src/**/*.{ts,tsx}' 'tests/**/*.{ts,tsx}'",
     "lint:fix": "eslint 'src/**/*.{ts,tsx}' 'tests/**/*.{ts,tsx}' --fix",
+    "typecheck": "tsc --noEmit",
+    "healthcheck": "bun -e 'const r=await fetch(`http://127.0.0.1:${process.env.PORT||4203}/health`);process.exit(r.ok?0:1)'",
     "migrate": "drizzle-kit migrate"
   },
   "peerDependencies": {

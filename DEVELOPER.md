@@ -14,9 +14,29 @@ Internal-only Accounts service. This service exposes **no public routes**.
 
 ### Health & Readiness (public, no auth)
 
-- `GET /health` – Liveness probe (always returns 200 if service is running)
-  - Response: `{ "status": "ok", "service": "xynes-accounts-service" }`
-- `GET /ready` – Readiness probe (checks DB connectivity)
+- `GET /health` – Liveness probe + downstream dependency status (H-2; binding contract: [`xynes-infra/infra/release/HEALTHCHECK-CONTRACT.md`](../xynes-infra/infra/release/HEALTHCHECK-CONTRACT.md)).
+  - 200 OK on the happy path; 503 when a critical dependency fails.
+  - Response (always JSON, `application/json; charset=utf-8`):
+
+    ```jsonc
+    {
+      "ok": true,
+      "service": "xynes-accounts-service",
+      "version": "v0.1.0",      // from XYNES_BUILD_VERSION env, falls back to "dev"
+      "uptime_seconds": 1234,
+      "checks": {
+        "db": "ok",             // critical — flips top-level ok
+        "authz": "skipped"      // non-critical (§4 rule 3) — does NOT flip ok
+      }
+    }
+    ```
+
+  - Auth: NONE. The endpoint must be reachable with no `Authorization`, no `X-Internal-Service-Token`, no cookies (it sits in front of the internal-service-auth middleware so Docker's `HEALTHCHECK` directive can probe inside the container).
+  - Access log: SKIPPED. `src/app.ts` mounts `hono/logger` only on non-`/health` and non-`/ready` paths per HEALTHCHECK-CONTRACT.md §2.6.
+  - Probes: `db` runs a `SELECT 1` against `DATABASE_URL` via `checkPostgresReadiness()` with a 1 s timeout per §2.5; `authz` is an optional one-hop `GET ${ACCOUNTS_HEALTH_AUTHZ_URL}` (also 1 s timeout). Both probes' failures are cached for 30 s to avoid retry storms per §4 cascade-avoidance rules.
+  - Latency budget: ≤ 50 ms p95, ≤ 300 ms p99. Tests assert ≤ 200 ms with a generous margin for jsdom/CI variability.
+  - Forbidden content: the body must NEVER contain `DATABASE_URL`, `JWT_SECRET`, raw API keys, stack traces, or any value that identifies a user or workspace. The handler catches probe errors and surfaces only the closed-set check value; regression-guarded by [`tests/health.unit.test.ts`](./tests/health.unit.test.ts) §7.8.
+- `GET /ready` – Readiness probe (checks DB connectivity).
   - Success (200): `{ "status": "ready" }`
   - Failure (503): `{ "status": "not_ready", "error": "<message>" }`
 
@@ -751,3 +771,65 @@ Common commands:
 
 - `bun run lint`
 - `bun run lint:fix`
+
+## Production Dockerfile (H-2)
+
+Multi-stage layout cloned from the H-1 pioneer recipe — see
+[`xynes-infra/docs/plans/2026-05-13-mvp-release-stories/group-H-dockerfile-prod-targets.md`](../xynes-infra/docs/plans/2026-05-13-mvp-release-stories/group-H-dockerfile-prod-targets.md)
+§"Landed implementation notes (2026-06-15)" for the deviation rationale.
+
+### Stages
+
+- **`base`** — pinned `oven/bun:1-alpine` by manifest-list digest (matches the H-1 lockstep digest). Shared install context.
+- **`dev`** — bind-mount-friendly target for the local `docker-compose.dev.yml` stack. Bun watch mode.
+- **`prod`** — hardened runtime: non-root `xynes` user (uid 1001), production-only deps, no test/docs payload, no `.env*` files. `HEALTHCHECK` directive wired against `/health` per [`HEALTHCHECK-CONTRACT.md`](../xynes-infra/infra/release/HEALTHCHECK-CONTRACT.md) §5.
+
+### Build & smoke commands
+
+```bash
+# Build prod image
+docker buildx build --target prod -t xynesplatform/xynes-accounts-service:test --load .
+
+# Verify image properties
+docker image inspect xynesplatform/xynes-accounts-service:test --format '{{.Config.User}}'              # → xynes
+docker image inspect xynesplatform/xynes-accounts-service:test --format '{{json .Config.Healthcheck}}'  # → CMD-SHELL bun run healthcheck
+docker image inspect xynesplatform/xynes-accounts-service:test --format '{{.Size}}'                     # → < 200 MB
+
+# Live smoke (needs DATABASE_URL reachable; example uses local Supabase)
+docker run -d --name h2-smoke --rm \
+  -e PORT=4203 \
+  -e DATABASE_URL='postgres://postgres:postgres@host.docker.internal:5432/postgres' \
+  -e XYNES_BUILD_VERSION='h2-test' \
+  -e INTERNAL_SERVICE_TOKEN='dummy' \
+  -p 4203:4203 \
+  xynesplatform/xynes-accounts-service:test
+sleep 8
+curl -s http://127.0.0.1:4203/health | jq .
+docker inspect --format '{{.State.Health.Status}}' h2-smoke   # → healthy
+docker stop h2-smoke
+```
+
+### Environment variables (production runtime)
+
+| Variable | Required | Default | Notes |
+|---|---|---|---|
+| `PORT` | yes | `4203` | Container listen port. |
+| `DATABASE_URL` | yes | — | Postgres connection string for `platform`/`identity` schemas. |
+| `XYNES_BUILD_VERSION` | recommended | `dev` | Surfaces in `/health.version`. Set to the image tag or `sha-<7>` at build time. |
+| `ACCOUNTS_HEALTH_AUTHZ_URL` | no | — | Optional authz `/health` URL for the one-hop probe (e.g. `http://authz-service:4300/health`). When unset, `/health.checks.authz` reports `"skipped"`. **MUST** point at the authz service directly, NOT the gateway (§4 rule 1 forbids transitive probes). |
+| `INTERNAL_SERVICE_TOKEN` | yes | — | Required by the internal-actions middleware; never used by `/health` or `/ready`. |
+| `JWT_SECRET` | yes | — | Used by `src/infra/security/internal-jwt.ts` for inviting/workspace JWTs; never used by `/health` or `/ready`. |
+
+### Deviations from the canonical group-H skeleton (locked by H-1)
+
+1. **Base image is `oven/bun:1-alpine`** (not `oven/bun:1` debian-slim). Debian lands the prod image at ~253 MB, blowing the < 200 MB story budget; alpine lands at ~140 MB. Bun's binary is statically linked, so musl libc vs glibc is a no-op for our workload.
+2. **No `build` stage.** xynes-accounts-service runs `src/index.ts` directly through Bun's TS support. The `prod` stage installs full deps (verifies `bun.lock`), discards them, reinstalls `--production`, and copies `src/` + `scripts/` + `drizzle/` + `package.json` + `bun.lock` + `tsconfig.json` + `drizzle.config.ts`. The TypeScript correctness gate runs in CI (group-M).
+3. **Healthcheck uses `bun -e 'fetch(...)'`** instead of `curl`, so the image needs no extra `apk add curl` layer.
+
+### `.dockerignore`
+
+See [`./.dockerignore`](./.dockerignore). Defense-in-depth list — the prod stage uses explicit `COPY src ./src` etc., so anything we forget here that we never `COPY` is already invisible to the prod image.
+
+### CVE waivers
+
+5 HIGH findings (4 inherited from H-1 + 1 drizzle-orm). All documented in [`./CVE-WAIVERS.md`](./CVE-WAIVERS.md) with rationale, remediation path, and tracking IDs (`H-1-FU-2`, `H-1-FU-3`, `H-2-FU-1`).
