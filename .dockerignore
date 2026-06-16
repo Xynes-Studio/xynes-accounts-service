@@ -1,0 +1,51 @@
+# xynes-accounts-service .dockerignore — H-2 (group-H §`.dockerignore checklist`).
+#
+# Goal: keep the build context small AND prevent .env*, dev-only tooling,
+# and test/docs payloads from bleeding into the prod image. The Dockerfile
+# does explicit `COPY src ./src` etc., so the negative list here is
+# defense in depth — anything we forget in this file but never `COPY` is
+# already invisible to the prod stage.
+
+# VCS metadata
+.git
+.gitignore
+.gitattributes
+
+# Local-only env files (NEVER ship credentials in the image — env vars
+# arrive via `-e` / compose / K8s at runtime)
+.env
+.env.*
+
+# Dependency caches + build artefacts (Bun re-installs in-image)
+node_modules
+coverage
+dist
+.turbo
+tsconfig.tsbuildinfo
+
+# Tests + test fixtures (excluded from prod image; CI runs `bun run test`
+# outside the prod build)
+test
+tests
+*.test.ts
+*.test.tsx
+*.spec.ts
+*.spec.tsx
+**/__tests__/**
+**/__mocks__/**
+
+# Docs (kept in the repo, not the image)
+README.md
+DEVELOPER.md
+docs
+
+# OS / editor noise
+.DS_Store
+.vscode
+.idea
+.claude
+.entire
+
+# Dockerfile + .dockerignore themselves don't need to ship
+Dockerfile
+.dockerignore
