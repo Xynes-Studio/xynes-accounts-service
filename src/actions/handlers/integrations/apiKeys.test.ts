@@ -124,7 +124,6 @@ function makeFakeDb({
               [Symbol.iterator]: function* () {
                 yield* rows;
               },
-              ...Promise.resolve(rows),
             };
           },
           // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -147,7 +146,6 @@ function makeFakeDb({
             return {
               returning: async () => rows.map((r) => ({ ...r, createdAt: NOW })),
               then: (resolve: (v: unknown) => void) => resolve(undefined),
-              ...Promise.resolve(undefined),
             };
           }
 

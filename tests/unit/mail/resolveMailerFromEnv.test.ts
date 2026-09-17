@@ -220,7 +220,7 @@ describe('resolveMailerFromEnv — Resend branch', () => {
       new Response('{}', {
         status: 200,
         headers: { 'content-type': 'application/json' },
-      })) as typeof fetch;
+      })) as unknown as typeof fetch;
     const mailer = await resolveMailerFromEnv({
       env: { MAIL_PROVIDER: 'resend', MAIL_RESEND_SECRET_REF: 'secret://xynes/mail/resend-dev' },
       secrets: makeFakeSecrets('success'),

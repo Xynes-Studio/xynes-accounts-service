@@ -333,11 +333,12 @@ describe('Internal Accounts Actions — API-key actor recognition (PFU-1)', () =
       });
 
       const res = await app.fetch(req);
-      expect([200, 500]).toContain(res.status);
-      // We only care that the actor-aware branch didn't reject
-      // public access. A 500 from a stubbed handler is acceptable here
-      // because the actor branch passed; the actual happy-path coverage
-      // for `accounts.invites.resolve` lives in `internal_actions.unit.test.ts`.
+      expect([401, 403]).not.toContain(res.status);
+      // We only care that the actor-aware branch did not reject public
+      // access. The handler can return 200 with a stub, 404 against a live
+      // database with no matching token, or 500 when its dependencies are
+      // unavailable. Happy-path response coverage lives in
+      // `internal_actions.unit.test.ts`.
     });
   });
 });

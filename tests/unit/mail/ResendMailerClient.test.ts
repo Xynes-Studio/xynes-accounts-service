@@ -98,7 +98,7 @@ function fakeResponse(opts: {
 }
 
 type FetchCall = {
-  url: RequestInfo | URL;
+  url: string | URL;
   init: RequestInit | undefined;
 };
 
@@ -107,14 +107,14 @@ function makeFetchSpy(scripted: Response | ((call: FetchCall) => Response | Prom
   calls: FetchCall[];
 } {
   const calls: FetchCall[] = [];
-  const spy = (async (url: RequestInfo | URL, init?: RequestInit) => {
+  const spy = (async (url: string | URL, init?: RequestInit) => {
     const call: FetchCall = { url, init };
     calls.push(call);
     if (typeof scripted === 'function') {
       return scripted(call);
     }
     return scripted;
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
   return { spy, calls };
 }
 
@@ -472,7 +472,7 @@ describe('ResendMailerClient — network / timeout', () => {
   it('maps network throw to PROVIDER_UNAVAILABLE', async () => {
     const spy = (async () => {
       throw new TypeError('fetch failed: connect ECONNREFUSED');
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
     const client = new ResendMailerClient({
       apiKey: VALID_RESEND_KEY,
       fromAddress: FROM_ADDRESS,
@@ -491,7 +491,7 @@ describe('ResendMailerClient — network / timeout', () => {
       const err = new Error('aborted');
       err.name = 'AbortError';
       throw err;
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
     const client = new ResendMailerClient({
       apiKey: VALID_RESEND_KEY,
       fromAddress: FROM_ADDRESS,
