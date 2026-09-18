@@ -87,7 +87,6 @@ function makeFakeDb({ selectRows = [], insertSpy, updateSpy }: FakeDbConfig = {}
             yield* selectRows;
           },
           // Allow direct await
-          ...Promise.resolve(selectRows),
         }),
       }),
     }),

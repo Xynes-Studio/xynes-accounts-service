@@ -17,11 +17,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
  * Service keys for internal service identification.
  */
 export type ServiceKey =
-  | 'doc-service'
-  | 'cms-service'
-  | 'authz-service'
-  | 'telemetry-service'
-  | 'accounts-service';
+  'doc-service' | 'cms-service' | 'authz-service' | 'telemetry-service' | 'accounts-service';
 
 /**
  * Internal JWT payload structure.

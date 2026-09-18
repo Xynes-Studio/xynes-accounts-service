@@ -72,7 +72,9 @@ export function createErrorResponse(
 export function formatZodError(error: ZodError): ApiErrorDetails {
   return {
     issues: error.issues.map((issue: ZodIssue) => ({
-      path: issue.path,
+      path: issue.path.filter(
+        (part): part is string | number => typeof part === 'string' || typeof part === 'number',
+      ),
       message: issue.message,
       code: issue.code,
     })),

@@ -71,8 +71,9 @@ const NON_WORKSPACE_ACTION_KEYS = new Set<AccountsActionKey>([
 const PUBLIC_ACTION_KEYS = new Set<AccountsActionKey>(['accounts.invites.resolve']);
 
 internalRoute.post('/accounts-actions', async (c) => {
-  const requestId = c.get('requestId') || generateRequestId();
-  c.set('requestId', requestId);
+  const getHeader = (name: string) => c.req.header(name) as string | undefined;
+  const requestId = (c.get('requestId' as never) as string | undefined) || generateRequestId();
+  c.set('requestId' as never, requestId);
 
   const maxBytes = Number.parseInt(config.server.MAX_JSON_BODY_BYTES, 10) || 1048576;
   const body = await parseJsonBodyWithLimit(c.req.raw, maxBytes);
@@ -101,7 +102,7 @@ internalRoute.post('/accounts-actions', async (c) => {
   //
   // Public actions (PUBLIC_ACTION_KEYS) bypass actor resolution entirely
   // — they may be invoked anonymously.
-  const rawActorType = c.req.header('X-XS-Actor-Type');
+  const rawActorType = getHeader('X-XS-Actor-Type');
   if (rawActorType && !ACTOR_KINDS.has(rawActorType)) {
     return c.json(
       createErrorResponse(
@@ -119,7 +120,7 @@ internalRoute.post('/accounts-actions', async (c) => {
 
   if (!isPublicAction) {
     if (actorType === 'api_key') {
-      const rawApiKeyId = c.req.header('X-XS-API-Key-Id');
+      const rawApiKeyId = getHeader('X-XS-API-Key-Id');
       if (!rawApiKeyId) {
         return c.json(
           createErrorResponse(
@@ -137,7 +138,7 @@ internalRoute.post('/accounts-actions', async (c) => {
           400,
         );
       }
-      const rawApiKeyPrefix = c.req.header('X-XS-API-Key-Prefix');
+      const rawApiKeyPrefix = getHeader('X-XS-API-Key-Prefix');
       if (!rawApiKeyPrefix) {
         return c.json(
           createErrorResponse(
@@ -167,7 +168,7 @@ internalRoute.post('/accounts-actions', async (c) => {
       // resolvedUserId stays null — api_key actors carry no user identity.
     } else {
       // user actor (default)
-      const rawUserId = c.req.header('X-XS-User-Id');
+      const rawUserId = getHeader('X-XS-User-Id');
       if (!rawUserId) {
         return c.json(
           createErrorResponse('UNAUTHORIZED', 'X-XS-User-Id header is required', requestId),
@@ -187,7 +188,7 @@ internalRoute.post('/accounts-actions', async (c) => {
   } else {
     // Public action — actor is optional. If a user id was forwarded by
     // the gateway anyway, capture it for audit purposes.
-    const rawUserId = c.req.header('X-XS-User-Id');
+    const rawUserId = getHeader('X-XS-User-Id');
     if (rawUserId) {
       const userIdResult = uuidHeader.safeParse(rawUserId);
       if (userIdResult.success) {
@@ -199,7 +200,7 @@ internalRoute.post('/accounts-actions', async (c) => {
 
   const workspaceRequired = !NON_WORKSPACE_ACTION_KEYS.has(key);
 
-  const rawWorkspaceId = c.req.header('X-Workspace-Id');
+  const rawWorkspaceId = getHeader('X-Workspace-Id');
   if (workspaceRequired && !rawWorkspaceId) {
     return c.json(
       createErrorResponse('MISSING_HEADER', 'X-Workspace-Id header is required', requestId),
@@ -224,9 +225,9 @@ internalRoute.post('/accounts-actions', async (c) => {
     userId: resolvedUserId,
     requestId,
     user: {
-      email: c.req.header('X-XS-User-Email') ?? undefined,
-      name: c.req.header('X-XS-User-Name') ?? undefined,
-      avatarUrl: c.req.header('X-XS-User-Avatar-Url') ?? undefined,
+      email: getHeader('X-XS-User-Email'),
+      name: getHeader('X-XS-User-Name'),
+      avatarUrl: getHeader('X-XS-User-Avatar-Url'),
     },
     actor,
   };

@@ -264,8 +264,7 @@ export function createCreateDomainHandler({
         // error handler (which would log the failed insert + its
         // verification_value_hash at error level and return 500).
         const constraintName = (err as { constraint_name?: unknown }).constraint_name as
-          | string
-          | undefined;
+          string | undefined;
         logger.warn('[DomainsCreate] DB CHECK violation', {
           requestId: ctx.requestId,
           workspaceId,

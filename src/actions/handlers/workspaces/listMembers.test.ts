@@ -47,6 +47,7 @@ describe('listWorkspaceMembers handler', () => {
       authzClient: {
         checkPermission: async () => false,
         listRolesForWorkspace: async () => [],
+        assignRole: async () => {},
       },
     });
 
@@ -82,6 +83,7 @@ describe('listWorkspaceMembers handler', () => {
           { userId: 'user-1', roleKey: 'workspace_owner' },
           { userId: 'user-2', roleKey: 'workspace_member' },
         ],
+        assignRole: async () => {},
       },
     });
 
