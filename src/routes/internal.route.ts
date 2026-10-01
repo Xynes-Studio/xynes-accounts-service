@@ -39,7 +39,7 @@ import {
 } from '../actions/schemas';
 import type { ActionActor } from '../actions/types';
 
-const internalRoute = new Hono();
+const internalRoute = new Hono<{ Variables: { requestId: string } }>();
 internalRoute.use('*', requireInternalServiceAuth());
 
 const actionRequestSchema = z
@@ -71,9 +71,9 @@ const NON_WORKSPACE_ACTION_KEYS = new Set<AccountsActionKey>([
 const PUBLIC_ACTION_KEYS = new Set<AccountsActionKey>(['accounts.invites.resolve']);
 
 internalRoute.post('/accounts-actions', async (c) => {
-  const getHeader = (name: string) => c.req.header(name) as string | undefined;
-  const requestId = (c.get('requestId' as never) as string | undefined) || generateRequestId();
-  c.set('requestId' as never, requestId);
+  const getHeader = (name: string) => c.req.header(name);
+  const requestId = c.get('requestId') || generateRequestId();
+  c.set('requestId', requestId);
 
   const maxBytes = Number.parseInt(config.server.MAX_JSON_BODY_BYTES, 10) || 1048576;
   const body = await parseJsonBodyWithLimit(c.req.raw, maxBytes);

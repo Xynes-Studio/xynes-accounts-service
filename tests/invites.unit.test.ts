@@ -58,7 +58,6 @@ describe('Workspace invites (unit, DI)', () => {
       authzClient,
       idFactory: () => 'invite-1',
       tokenFactory: () => ({ token: 'raw-token', tokenHash: 'hashed-token' }),
-      now: () => new Date('2025-01-01T00:00:00.000Z'),
       expiresInDays: 7,
     });
 
@@ -369,13 +368,15 @@ describe('Workspace invites (unit, DI)', () => {
       email: 'user@example.com',
       roleKey: 'workspace_member',
       status: 'pending',
-      expiresAt: new Date('2026-01-01T00:00:00.000Z'),
+      expiresAt: new Date('2070-01-01T00:00:00.000Z'),
     };
 
     let selectCall = 0;
     const insertedMembers: any[] = [];
     const authzCalls: any[] = [];
 
+    let failAssignment = false;
+    const removedTables: unknown[] = [];
     const dbClient: any = {
       select: () => {
         selectCall += 1;
@@ -441,13 +442,17 @@ describe('Workspace invites (unit, DI)', () => {
           }),
         }),
       }),
-      delete: () => ({
-        where: async () => undefined,
+      delete: (table: unknown) => ({
+        where: async () => {
+          removedTables.push(table);
+        },
       }),
     };
 
     const authzClient: any = {
-      assignRole: async (req: any) => {
+      assignRole: async (req: any, context: unknown) => {
+        expect(context).toEqual(authedCtx);
+        if (failAssignment) throw new Error('authz unavailable');
         authzCalls.push(req);
       },
     };
@@ -455,7 +460,6 @@ describe('Workspace invites (unit, DI)', () => {
     const handler = createAcceptWorkspaceInviteHandler({
       dbClient,
       authzClient,
-      now: () => new Date('2025-01-01T00:00:00.000Z'),
     });
     const result = await handler({ token: 'raw-token' }, authedCtx as any);
 
@@ -481,5 +485,11 @@ describe('Workspace invites (unit, DI)', () => {
       workspaceId: authedCtx.workspaceId,
       roleKey: 'workspace_member',
     });
+    failAssignment = true;
+    selectCall = 0;
+    await expect(handler({ token: 'raw-token' }, authedCtx)).rejects.toThrow(
+      'Failed to assign role via authz service',
+    );
+    expect(removedTables).toEqual([workspaceMembers]);
   });
 });

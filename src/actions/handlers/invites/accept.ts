@@ -132,11 +132,14 @@ export function createAcceptWorkspaceInviteHandler({
     }
 
     try {
-      await resolvedAuthzClient.assignRole({
-        userId: ctx.userId,
-        workspaceId: invite.workspaceId,
-        roleKey: invite.roleKey,
-      });
+      await resolvedAuthzClient.assignRole(
+        {
+          userId: ctx.userId,
+          workspaceId: invite.workspaceId,
+          roleKey: invite.roleKey,
+        },
+        ctx,
+      );
     } catch {
       // Best-effort cleanup to avoid granting membership without RBAC.
       try {

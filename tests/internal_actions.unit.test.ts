@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll } from 'bun:test';
 import app from '../src/app';
 import { INTERNAL_SERVICE_TOKEN } from './support/internal-auth';
+import { signedInit } from './support/internal-request';
 import { registerAccountsActions } from '../src/actions/register';
 import { registerAction } from '../src/actions/registry';
 
@@ -93,7 +94,7 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
   });
 
   it('returns 401 for missing X-Internal-Service-Token', async () => {
-    const req = new Request('http://localhost/internal/accounts-actions', {
+    const req = signedRawRequest('http://localhost/internal/accounts-actions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -111,7 +112,7 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
   });
 
   it('returns 403 for mismatched X-Internal-Service-Token', async () => {
-    const req = new Request('http://localhost/internal/accounts-actions', {
+    const req = signedRawRequest('http://localhost/internal/accounts-actions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -130,7 +131,7 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
   });
 
   it('returns 400 for missing X-Workspace-Id', async () => {
-    const req = new Request('http://localhost/internal/accounts-actions', {
+    const req = signedRawRequest('http://localhost/internal/accounts-actions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -149,7 +150,7 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
   });
 
   it('returns 401 for missing X-XS-User-Id', async () => {
-    const req = new Request('http://localhost/internal/accounts-actions', {
+    const req = signedRawRequest('http://localhost/internal/accounts-actions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -167,7 +168,7 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
   });
 
   it('returns 400 for invalid header UUIDs', async () => {
-    const req = new Request('http://localhost/internal/accounts-actions', {
+    const req = signedRawRequest('http://localhost/internal/accounts-actions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -186,7 +187,7 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
   });
 
   it('returns 400 for invalid request body', async () => {
-    const req = new Request('http://localhost/internal/accounts-actions', {
+    const req = signedRawRequest('http://localhost/internal/accounts-actions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -205,8 +206,8 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
     expect(body.error.message).toBe('Invalid request body');
   });
 
-  it('returns 400 for unknown actionKey', async () => {
-    const req = new Request('http://localhost/internal/accounts-actions', {
+  it('returns 403 for an action outside gateway capabilities', async () => {
+    const req = signedRawRequest('http://localhost/internal/accounts-actions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -218,14 +219,14 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
     });
 
     const res = await app.fetch(req);
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(403);
     const body: any = await res.json();
     expect(body.ok).toBe(false);
-    expect(body.error.code).toBe('UNKNOWN_ACTION');
+    expect(body.error.code).toBe('FORBIDDEN');
   });
 
   it('returns 400 for payload validation error', async () => {
-    const req = new Request('http://localhost/internal/accounts-actions', {
+    const req = signedRawRequest('http://localhost/internal/accounts-actions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -248,7 +249,7 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
   });
 
   it('returns 200 and ok envelope for accounts.ping', async () => {
-    const req = new Request('http://localhost/internal/accounts-actions', {
+    const req = signedRawRequest('http://localhost/internal/accounts-actions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -268,7 +269,7 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
   });
 
   it('allows accounts.me.getOrCreate without X-Workspace-Id (workspaceScoped=false)', async () => {
-    const req = new Request('http://localhost/internal/accounts-actions', {
+    const req = signedRawRequest('http://localhost/internal/accounts-actions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -294,7 +295,7 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
   });
 
   it('allows accounts.user.updateSelf without X-Workspace-Id (workspaceScoped=false)', async () => {
-    const req = new Request('http://localhost/internal/accounts-actions', {
+    const req = signedRawRequest('http://localhost/internal/accounts-actions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -322,7 +323,7 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
   });
 
   it('rejects accounts.user.updateSelf when payload has extra keys (z.strict)', async () => {
-    const req = new Request('http://localhost/internal/accounts-actions', {
+    const req = signedRawRequest('http://localhost/internal/accounts-actions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -343,7 +344,7 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
   });
 
   it('rejects accounts.user.updateSelf when displayName has control characters', async () => {
-    const req = new Request('http://localhost/internal/accounts-actions', {
+    const req = signedRawRequest('http://localhost/internal/accounts-actions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -364,7 +365,7 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
   });
 
   it('allows accounts.workspaces.listForUser without X-Workspace-Id (workspaceScoped=false)', async () => {
-    const req = new Request('http://localhost/internal/accounts-actions', {
+    const req = signedRawRequest('http://localhost/internal/accounts-actions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -387,7 +388,7 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
   });
 
   it('rejects accounts.workspaces.listForUser when payload has extra keys (z.strict)', async () => {
-    const req = new Request('http://localhost/internal/accounts-actions', {
+    const req = signedRawRequest('http://localhost/internal/accounts-actions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -408,7 +409,7 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
   });
 
   it('allows accounts.workspaces.create without X-Workspace-Id (workspaceScoped=false)', async () => {
-    const req = new Request('http://localhost/internal/accounts-actions', {
+    const req = signedRawRequest('http://localhost/internal/accounts-actions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -437,7 +438,7 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
   });
 
   it('rejects accounts.workspaces.create for missing required fields', async () => {
-    const req = new Request('http://localhost/internal/accounts-actions', {
+    const req = signedRawRequest('http://localhost/internal/accounts-actions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -458,7 +459,7 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
   });
 
   it('allows public accounts.invites.resolve without user/workspace headers', async () => {
-    const req = new Request('http://localhost/internal/accounts-actions', {
+    const req = signedRawRequest('http://localhost/internal/accounts-actions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -486,7 +487,7 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
   });
 
   it('allows accounts.invites.accept without workspace header and returns 201', async () => {
-    const req = new Request('http://localhost/internal/accounts-actions', {
+    const req = signedRawRequest('http://localhost/internal/accounts-actions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -519,7 +520,7 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
 
   it('returns 413 when request body exceeds configured limit', async () => {
     const tooLarge = 'a'.repeat(1024 * 1024 + 2048);
-    const req = new Request('http://localhost/internal/accounts-actions', {
+    const req = signedRawRequest('http://localhost/internal/accounts-actions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -538,7 +539,7 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
   });
 
   it('returns 400 for invalid JSON body', async () => {
-    const req = new Request('http://localhost/internal/accounts-actions', {
+    const req = signedRawRequest('http://localhost/internal/accounts-actions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -556,3 +557,13 @@ describe('Internal Accounts Actions Endpoint (Unit)', () => {
     expect(body.error.code).toBe('INVALID_JSON');
   });
 });
+
+function signedRawRequest(url: string, init: RequestInit) {
+  const headers = new Headers(init.headers);
+  return new Request(
+    url,
+    headers.get('X-Internal-Service-Token') === INTERNAL_SERVICE_TOKEN
+      ? signedInit(new URL(url).pathname, init)
+      : init,
+  );
+}
