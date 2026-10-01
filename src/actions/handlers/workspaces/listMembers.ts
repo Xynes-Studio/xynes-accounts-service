@@ -41,11 +41,14 @@ export function createListWorkspaceMembersHandler({
 
     const resolvedAuthzClient = authzClient ?? createAuthzClient();
 
-    const allowed = await resolvedAuthzClient.checkPermission({
-      userId: ctx.userId,
-      workspaceId: ctx.workspaceId,
-      actionKey: 'accounts.workspace_members.listForWorkspace',
-    });
+    const allowed = await resolvedAuthzClient.checkPermission(
+      {
+        userId: ctx.userId,
+        workspaceId: ctx.workspaceId,
+        actionKey: 'accounts.workspace_members.listForWorkspace',
+      },
+      ctx,
+    );
 
     if (!allowed) {
       throw new DomainError(
@@ -69,10 +72,13 @@ export function createListWorkspaceMembersHandler({
       .where(eq(workspaceMembers.workspaceId, ctx.workspaceId));
 
     const userIds = rows.map((row) => row.userId);
-    const roleAssignments = await resolvedAuthzClient.listRolesForWorkspace({
-      workspaceId: ctx.workspaceId,
-      userIds,
-    });
+    const roleAssignments = await resolvedAuthzClient.listRolesForWorkspace(
+      {
+        workspaceId: ctx.workspaceId,
+        userIds,
+      },
+      ctx,
+    );
 
     const rolesByUser = new Map<string, string[]>();
     for (const assignment of roleAssignments) {

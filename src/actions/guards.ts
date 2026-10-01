@@ -133,11 +133,14 @@ export async function requirePermission(
   // Falls back to `requireUserId(ctx)` which preserves the pre-PFU-1
   // UNAUTHORIZED error semantics for legacy callers.
   const userId = actor?.kind === 'user' ? actor.userId : requireUserId(ctx);
-  const allowed = await authzClient.checkPermission({
-    userId,
-    workspaceId: ctx.workspaceId,
-    actionKey,
-  });
+  const allowed = await authzClient.checkPermission(
+    {
+      userId,
+      workspaceId: ctx.workspaceId,
+      actionKey,
+    },
+    ctx,
+  );
   if (!allowed) {
     throw new DomainError('You do not have permission to perform this action', 'FORBIDDEN', 403);
   }

@@ -87,11 +87,14 @@ export function createCreateWorkspaceHandler({
     }
 
     try {
-      await resolvedAuthzClient.assignRole({
-        userId,
-        workspaceId,
-        roleKey: 'workspace_owner',
-      });
+      await resolvedAuthzClient.assignRole(
+        {
+          userId,
+          workspaceId,
+          roleKey: 'workspace_owner',
+        },
+        ctx,
+      );
     } catch {
       logger.error('[WorkspacesCreate] Failed to assign workspace_owner role', {
         requestId: ctx.requestId,

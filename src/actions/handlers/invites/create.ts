@@ -122,11 +122,14 @@ export function createCreateWorkspaceInviteHandler({
     }
 
     const resolvedAuthzClient = authzClient ?? createAuthzClient();
-    const allowed = await resolvedAuthzClient.checkPermission({
-      userId: ctx.userId,
-      workspaceId: ctx.workspaceId,
-      actionKey: 'accounts.invites.create',
-    });
+    const allowed = await resolvedAuthzClient.checkPermission(
+      {
+        userId: ctx.userId,
+        workspaceId: ctx.workspaceId,
+        actionKey: 'accounts.invites.create',
+      },
+      ctx,
+    );
     if (!allowed) {
       throw new DomainError('Access denied', 'FORBIDDEN', 403);
     }

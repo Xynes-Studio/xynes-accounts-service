@@ -312,6 +312,8 @@ describe('Action handlers (unit, DI)', () => {
     const insertedMembers: any[] = [];
     const authzCalls: any[] = [];
 
+    let failAssignment = false;
+    const removedTables: unknown[] = [];
     const tx: any = {
       select: () => ({
         from: () => ({
@@ -319,6 +321,11 @@ describe('Action handlers (unit, DI)', () => {
             limit: async () => [],
           }),
         }),
+      }),
+      delete: (table: unknown) => ({
+        where: async () => {
+          removedTables.push(table);
+        },
       }),
       insert: (table: any) => ({
         values: async (row: any) => {
@@ -334,7 +341,9 @@ describe('Action handlers (unit, DI)', () => {
     };
 
     const authzClient: any = {
-      assignRole: async (req: any) => {
+      assignRole: async (req: any, context: unknown) => {
+        expect(context).toEqual(ctx);
+        if (failAssignment) throw new Error('authz unavailable');
         authzCalls.push(req);
       },
     };
@@ -373,6 +382,11 @@ describe('Action handlers (unit, DI)', () => {
       workspaceId: 'ws-123',
       roleKey: 'workspace_owner',
     });
+    failAssignment = true;
+    await expect(handler({ name: 'Acme Inc', slug: 'acme' }, ctx)).rejects.toThrow(
+      'Failed to assign workspace_owner role',
+    );
+    expect(removedTables).toEqual([workspaceMembers, workspaces]);
   });
 
   it('createWorkspace rejects duplicate slug with CONFLICT', async () => {

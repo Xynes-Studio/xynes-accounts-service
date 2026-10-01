@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import app from '../src/app';
 import { INTERNAL_SERVICE_TOKEN } from './support/internal-auth';
+import { signedInit } from './support/internal-request';
 import { registerAccountsActions } from '../src/actions/register';
 import { registerAction, getActionHandler } from '../src/actions/registry';
 
@@ -55,7 +56,7 @@ describe('Internal Accounts Actions — API-key actor recognition (PFU-1)', () =
 
   describe('Actor: api_key', () => {
     it('accepts X-XS-Actor-Type: api_key without X-XS-User-Id', async () => {
-      const req = new Request('http://localhost/internal/accounts-actions', {
+      const req = signedRawRequest('http://localhost/internal/accounts-actions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -75,7 +76,7 @@ describe('Internal Accounts Actions — API-key actor recognition (PFU-1)', () =
     });
 
     it('exposes a discriminated api_key actor on ctx', async () => {
-      const req = new Request('http://localhost/internal/accounts-actions', {
+      const req = signedRawRequest('http://localhost/internal/accounts-actions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -101,7 +102,7 @@ describe('Internal Accounts Actions — API-key actor recognition (PFU-1)', () =
     });
 
     it('rejects api_key actor missing X-XS-API-Key-Id with 400 INVALID_HEADER', async () => {
-      const req = new Request('http://localhost/internal/accounts-actions', {
+      const req = signedRawRequest('http://localhost/internal/accounts-actions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -122,7 +123,7 @@ describe('Internal Accounts Actions — API-key actor recognition (PFU-1)', () =
     });
 
     it('rejects api_key actor with non-UUID X-XS-API-Key-Id with 400 INVALID_HEADER', async () => {
-      const req = new Request('http://localhost/internal/accounts-actions', {
+      const req = signedRawRequest('http://localhost/internal/accounts-actions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -143,7 +144,7 @@ describe('Internal Accounts Actions — API-key actor recognition (PFU-1)', () =
     });
 
     it('rejects api_key actor missing X-XS-API-Key-Prefix with 400 INVALID_HEADER', async () => {
-      const req = new Request('http://localhost/internal/accounts-actions', {
+      const req = signedRawRequest('http://localhost/internal/accounts-actions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -166,7 +167,7 @@ describe('Internal Accounts Actions — API-key actor recognition (PFU-1)', () =
     it('rejects api_key actor with malformed X-XS-API-Key-Prefix with 400 INVALID_HEADER', async () => {
       // Prefix MUST be exactly 8 hex chars per the gateway contract
       // (xynes-gateway/src/security/apiKeyAuth.ts API_KEY_LOOKUP_PREFIX_LENGTH).
-      const req = new Request('http://localhost/internal/accounts-actions', {
+      const req = signedRawRequest('http://localhost/internal/accounts-actions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -187,7 +188,7 @@ describe('Internal Accounts Actions — API-key actor recognition (PFU-1)', () =
     });
 
     it('rejects unknown X-XS-Actor-Type values with 400 INVALID_HEADER', async () => {
-      const req = new Request('http://localhost/internal/accounts-actions', {
+      const req = signedRawRequest('http://localhost/internal/accounts-actions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -207,7 +208,7 @@ describe('Internal Accounts Actions — API-key actor recognition (PFU-1)', () =
     });
 
     it('still requires X-Workspace-Id for workspace-scoped actions', async () => {
-      const req = new Request('http://localhost/internal/accounts-actions', {
+      const req = signedRawRequest('http://localhost/internal/accounts-actions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -230,7 +231,7 @@ describe('Internal Accounts Actions — API-key actor recognition (PFU-1)', () =
 
   describe('Actor: user (backward compatibility)', () => {
     it('exposes a discriminated user actor on ctx (default user JWT path)', async () => {
-      const req = new Request('http://localhost/internal/accounts-actions', {
+      const req = signedRawRequest('http://localhost/internal/accounts-actions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -256,7 +257,7 @@ describe('Internal Accounts Actions — API-key actor recognition (PFU-1)', () =
       // Legacy "no X-XS-Actor-Type header" path: defaults to user actor,
       // so X-XS-User-Id stays required. This preserves the pre-PFU-1
       // behaviour byte-for-byte.
-      const req = new Request('http://localhost/internal/accounts-actions', {
+      const req = signedRawRequest('http://localhost/internal/accounts-actions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -274,7 +275,7 @@ describe('Internal Accounts Actions — API-key actor recognition (PFU-1)', () =
     });
 
     it('still accepts X-XS-Actor-Type: user as an explicit user actor', async () => {
-      const req = new Request('http://localhost/internal/accounts-actions', {
+      const req = signedRawRequest('http://localhost/internal/accounts-actions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -296,7 +297,7 @@ describe('Internal Accounts Actions — API-key actor recognition (PFU-1)', () =
     });
 
     it('rejects X-XS-Actor-Type: user without X-XS-User-Id with 401', async () => {
-      const req = new Request('http://localhost/internal/accounts-actions', {
+      const req = signedRawRequest('http://localhost/internal/accounts-actions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -320,7 +321,7 @@ describe('Internal Accounts Actions — API-key actor recognition (PFU-1)', () =
       // accounts.invites.resolve is in PUBLIC_ACTION_KEYS — neither
       // user nor api_key actor required. Stubbed by the main internal-
       // actions test file already, so just exercise the route here.
-      const req = new Request('http://localhost/internal/accounts-actions', {
+      const req = signedRawRequest('http://localhost/internal/accounts-actions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -342,3 +343,13 @@ describe('Internal Accounts Actions — API-key actor recognition (PFU-1)', () =
     });
   });
 });
+
+function signedRawRequest(url: string, init: RequestInit) {
+  const headers = new Headers(init.headers);
+  return new Request(
+    url,
+    headers.get('X-Internal-Service-Token') === INTERNAL_SERVICE_TOKEN
+      ? signedInit(new URL(url).pathname, init)
+      : init,
+  );
+}

@@ -174,6 +174,42 @@ describe('MAIL-5 — accounts.invites.resend', () => {
   });
 
   describe('happy path', () => {
+    it('uses the current clock and preserves initiating context when checking permission', async () => {
+      const { dbClient, updates } = makeDbClient({
+        inviteRow: {
+          id: 'invite-1',
+          workspaceId: authedCtx.workspaceId,
+          email: 'invitee@example.com',
+          roleKey: 'workspace_member',
+          invitedBy: authedCtx.userId,
+          status: 'pending',
+          expiresAt: new Date(Date.now() + 86400000),
+          emailAttempts: 0,
+        },
+      });
+      let checked = false;
+      const handler = createResendWorkspaceInviteHandler({
+        dbClient,
+        authzClient: {
+          checkPermission: async (_request, context) => {
+            checked = true;
+            expect(context).toEqual(authedCtx);
+            return true;
+          },
+          assignRole: async () => {
+            throw new Error('unexpected role assignment');
+          },
+          listRolesForWorkspace: async () => [],
+        },
+        mailer: { sendInvite: async () => ({ messageId: 'local-fixture' }) },
+        tokenFactory: () => ({ token: 'raw', tokenHash: 'hash' }),
+      });
+      const before = Date.now();
+      await handler({ inviteId: 'invite-1' }, authedCtx);
+      expect(checked).toBe(true);
+      expect(updates[0].emailSentAt.getTime()).toBeGreaterThanOrEqual(before);
+      expect(updates[0].emailSentAt.getTime()).toBeLessThanOrEqual(Date.now());
+    });
     it('dispatches mailer, rotates the token, updates MAIL-3 columns, returns canonical shape', async () => {
       const { dbClient, updates } = makeDbClient();
       const mailerCalls: any[] = [];

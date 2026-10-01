@@ -1,3 +1,10 @@
+import {
+  signInternalRequest,
+  loadInternalRequestSigner,
+  type InternalRequestSigner,
+} from '../security/internal-request';
+import type { ActionContext } from '../../actions/types';
+import { randomUUID } from 'node:crypto';
 import { DomainError } from '@xynes/errors';
 
 export type AssignRoleRequest = {
@@ -23,30 +30,67 @@ export type WorkspaceRoleAssignment = {
 };
 
 export type AuthzClient = {
-  assignRole: (req: AssignRoleRequest) => Promise<void>;
-  checkPermission: (req: CheckPermissionRequest) => Promise<boolean>;
-  listRolesForWorkspace: (req: ListRolesForWorkspaceRequest) => Promise<WorkspaceRoleAssignment[]>;
+  assignRole: (req: AssignRoleRequest, context?: ActionContext) => Promise<void>;
+  checkPermission: (req: CheckPermissionRequest, context?: ActionContext) => Promise<boolean>;
+  listRolesForWorkspace: (
+    req: ListRolesForWorkspaceRequest,
+    context?: ActionContext,
+  ) => Promise<WorkspaceRoleAssignment[]>;
 };
 
 export type CreateAuthzClientDeps = {
   baseUrl?: string;
+  /** Legacy input retained for source compatibility; never used to authenticate. */
   internalServiceToken?: string;
+  signer?: InternalRequestSigner;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
 };
 
 export function createAuthzClient({
   baseUrl = process.env.AUTHZ_SERVICE_URL,
-  internalServiceToken = process.env.INTERNAL_SERVICE_TOKEN,
+  signer,
   fetchImpl = fetch,
   timeoutMs,
 }: CreateAuthzClientDeps = {}): AuthzClient {
   if (!baseUrl) {
     throw new DomainError('AUTHZ_SERVICE_URL is not set', 'INTERNAL_ERROR', 500);
   }
-  if (!internalServiceToken) {
-    throw new DomainError('INTERNAL_SERVICE_TOKEN is not set', 'INTERNAL_ERROR', 500);
+  let identity: InternalRequestSigner;
+  try {
+    identity = signer ?? loadInternalRequestSigner('accounts');
+  } catch {
+    throw new DomainError('Internal request identity misconfigured', 'INTERNAL_ERROR', 500);
   }
+  const signedHeaders = (
+    url: string,
+    body: string,
+    operation: string,
+    workspaceId: string | null,
+    context?: ActionContext,
+  ) => {
+    const headers = new Headers({
+      'Content-Type': 'application/json',
+      'X-Request-Id': context?.requestId || randomUUID(),
+    });
+    if (workspaceId) headers.set('X-Workspace-Id', workspaceId);
+    if (context?.userId) headers.set('X-XS-User-Id', context.userId);
+    if (context?.actor) {
+      headers.set('X-XS-Actor-Type', context.actor.kind);
+      if (context.actor.kind === 'api_key') {
+        headers.set('X-XS-API-Key-Id', context.actor.apiKeyId);
+        headers.set('X-XS-API-Key-Prefix', context.actor.keyPrefix);
+      }
+    }
+    headers.set(
+      'X-Internal-Service-Token',
+      signInternalRequest(
+        { url, body, operation, audience: 'authz-service', method: 'POST', headers },
+        identity,
+      ),
+    );
+    return headers;
+  };
 
   let actionEndpoint: string;
   let checkEndpoint: string;
@@ -64,26 +108,27 @@ export function createAuthzClient({
     Number.isFinite(resolvedTimeoutMsRaw) && resolvedTimeoutMsRaw > 0 ? resolvedTimeoutMsRaw : 5000;
 
   return {
-    async assignRole(payload: AssignRoleRequest) {
+    async assignRole(payload: AssignRoleRequest, context?: ActionContext) {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), resolvedTimeoutMs);
 
       let res: Response;
       try {
+        const body = JSON.stringify({ actionKey: 'authz.assignRole', payload });
         res = await fetchImpl(actionEndpoint, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Internal-Service-Token': internalServiceToken,
-          },
-          body: JSON.stringify({
-            actionKey: 'authz.assignRole',
-            payload,
-          }),
+          headers: signedHeaders(
+            actionEndpoint,
+            body,
+            'authz.assignRole',
+            payload.workspaceId,
+            context,
+          ),
+          body: body,
           signal: controller.signal,
         });
-      } catch (err: any) {
-        if (err?.name === 'AbortError') {
+      } catch (err: unknown) {
+        if (err instanceof Error && err.name === 'AbortError') {
           throw new DomainError('Authz service request timed out', 'GATEWAY_TIMEOUT', 504);
         }
         throw new DomainError('Failed to reach authz service', 'BAD_GATEWAY', 502, { cause: err });
@@ -97,23 +142,24 @@ export function createAuthzClient({
       }
     },
 
-    async checkPermission(payload: CheckPermissionRequest): Promise<boolean> {
+    async checkPermission(
+      payload: CheckPermissionRequest,
+      context?: ActionContext,
+    ): Promise<boolean> {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), resolvedTimeoutMs);
 
       let res: Response;
       try {
+        const body = JSON.stringify(payload);
         res = await fetchImpl(checkEndpoint, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Internal-Service-Token': internalServiceToken,
-          },
-          body: JSON.stringify(payload),
+          headers: signedHeaders(checkEndpoint, body, 'authz.check', payload.workspaceId, context),
+          body: body,
           signal: controller.signal,
         });
-      } catch (err: any) {
-        if (err?.name === 'AbortError') {
+      } catch (err: unknown) {
+        if (err instanceof Error && err.name === 'AbortError') {
           throw new DomainError('Authz service request timed out', 'GATEWAY_TIMEOUT', 504);
         }
         throw new DomainError('Failed to reach authz service', 'BAD_GATEWAY', 502, { cause: err });
@@ -128,13 +174,19 @@ export function createAuthzClient({
       const parsed: unknown = await res.json().catch(() => null);
       if (!parsed || typeof parsed !== 'object') return false;
 
-      const record = parsed as Record<string, unknown>;
+      const record = parsed;
       if ('allowed' in record) return record.allowed === true;
 
       // Support envelope responses: { ok: true, data: { allowed: boolean } }
-      if (record.ok === true && record.data && typeof record.data === 'object') {
-        const data = record.data as Record<string, unknown>;
-        return data.allowed === true;
+      if (
+        'ok' in record &&
+        record.ok === true &&
+        'data' in record &&
+        record.data &&
+        typeof record.data === 'object'
+      ) {
+        const data = record.data;
+        return 'allowed' in data && data.allowed === true;
       }
 
       return false;
@@ -142,26 +194,28 @@ export function createAuthzClient({
 
     async listRolesForWorkspace(
       payload: ListRolesForWorkspaceRequest,
+      context?: ActionContext,
     ): Promise<WorkspaceRoleAssignment[]> {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), resolvedTimeoutMs);
 
       let res: Response;
       try {
+        const body = JSON.stringify({ actionKey: 'authz.listRolesForWorkspace', payload });
         res = await fetchImpl(actionEndpoint, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Internal-Service-Token': internalServiceToken,
-          },
-          body: JSON.stringify({
-            actionKey: 'authz.listRolesForWorkspace',
-            payload,
-          }),
+          headers: signedHeaders(
+            actionEndpoint,
+            body,
+            'authz.listRolesForWorkspace',
+            payload.workspaceId,
+            context,
+          ),
+          body: body,
           signal: controller.signal,
         });
-      } catch (err: any) {
-        if (err?.name === 'AbortError') {
+      } catch (err: unknown) {
+        if (err instanceof Error && err.name === 'AbortError') {
           throw new DomainError('Authz service request timed out', 'GATEWAY_TIMEOUT', 504);
         }
         throw new DomainError('Failed to reach authz service', 'BAD_GATEWAY', 502, {
@@ -178,15 +232,26 @@ export function createAuthzClient({
       const parsed: unknown = await res.json().catch(() => null);
       if (!parsed || typeof parsed !== 'object') return [];
 
-      const record = parsed as Record<string, unknown>;
-      if (record.ok === true && record.data && typeof record.data === 'object') {
-        const data = record.data as Record<string, unknown>;
-        const roles = data.roles;
+      const record = parsed;
+      if (
+        'ok' in record &&
+        record.ok === true &&
+        'data' in record &&
+        record.data &&
+        typeof record.data === 'object'
+      ) {
+        const data = record.data;
+        const roles = 'roles' in data ? data.roles : null;
         if (Array.isArray(roles)) {
           return roles.filter(
-            (entry) =>
-              entry && typeof entry === 'object' && 'userId' in entry && 'roleKey' in entry,
-          ) as WorkspaceRoleAssignment[];
+            (entry: unknown): entry is WorkspaceRoleAssignment =>
+              !!entry &&
+              typeof entry === 'object' &&
+              'userId' in entry &&
+              typeof entry.userId === 'string' &&
+              'roleKey' in entry &&
+              typeof entry.roleKey === 'string',
+          );
         }
       }
 
