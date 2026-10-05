@@ -1,4 +1,4 @@
-/** SEC-003 wire contract. Mirrored byte-for-byte in gateway/accounts/authz. */
+/** Canonical bound-request protocol. Consumer mirrors are generated, never hand-edited. */
 import {
   createHash,
   createPrivateKey,
@@ -66,7 +66,10 @@ export class InternalRequestConfigError extends Error {
   }
 }
 
-export function loadInternalRequestSigner(issuer: 'gateway' | 'accounts'): InternalRequestSigner {
+export type InternalRequestIssuer =
+  'gateway' | 'accounts' | 'cms' | 'docs' | 'storage' | 'telemetry';
+
+export function loadInternalRequestSigner(issuer: InternalRequestIssuer): InternalRequestSigner {
   try {
     const path = process.env.INTERNAL_REQUEST_PRIVATE_KEY_FILE;
     const keyId = process.env.INTERNAL_REQUEST_KEY_ID;
@@ -168,6 +171,110 @@ const gatewayAccountsActions = new Set([
   'platform.api_keys.revoke',
   'platform.api_keys.usage.read',
 ]);
+export const INTERNAL_REQUEST_RECEIVERS = {
+  'cms-service': {
+    path: '/internal/cms-actions',
+    operations: [
+      'cms.delivery.listByDirectory',
+      'cms.delivery.getById',
+      'cms.content.create',
+      'cms.content.listPublished',
+      'cms.content.getPublishedBySlug',
+      'cms.blog_entry.create',
+      'cms.blog_entry.read',
+      'cms.blog_entry.listPublished',
+      'cms.blog_entry.getPublishedBySlug',
+      'cms.blog_entry.listAdmin',
+      'cms.blog_entry.updateMeta',
+      'cms.comments.create',
+      'cms.comments.listForEntry',
+      'cms.templates.listGlobal',
+      'cms.content_types.listForWorkspace',
+      'cms.content_types.ensureDefaults',
+      'cms.content_directories.listForWorkspace',
+      'cms.content_directories.create',
+      'cms.content_directories.update',
+      'cms.content_directories.delete',
+      'cms.entry.create',
+      'cms.entry.update',
+      'cms.entry.delete',
+      'cms.entry.publish',
+      'cms.entry.status.set',
+      'cms.entry.listByDirectory',
+      'cms.entry.getById',
+      'cms.entry.collaborators.set',
+      'cms.entry.favorite.toggle',
+      'cms.entry.favorite.list',
+      'cms.entry.share.generateInternalLink',
+    ],
+  },
+  'doc-service': {
+    path: '/internal/doc-actions',
+    operations: [
+      'docs.document.create',
+      'docs.document.read',
+      'docs.document.update',
+      'docs.document.listByWorkspace',
+    ],
+  },
+  'storage-service': {
+    path: '/internal/storage-actions',
+    operations: [
+      'platform.storage.objects.upload',
+      'platform.storage.objects.read',
+      'platform.storage.objects.delete',
+      'platform.storage.objects.process.retry',
+      'platform.storage.usage.read',
+    ],
+  },
+  'telemetry-service': {
+    path: '/internal/telemetry-actions',
+    operations: [
+      'telemetry.event.ingest',
+      'telemetry.events.ingest',
+      'telemetry.gateway.logs.ingest',
+      'telemetry.events.listRecentForWorkspace',
+      'telemetry.stats.summaryByRoute',
+    ],
+  },
+} as const;
+
+export function internalRequestAudience(serviceKey: string): string | null {
+  const normalized = serviceKey.trim().toLowerCase().replace(/[_-]/g, '');
+  const audiences: Readonly<Record<string, string>> = {
+    gateway: 'gateway-service',
+    accounts: 'accounts-service',
+    accountsservice: 'accounts-service',
+    authz: 'authz-service',
+    authzservice: 'authz-service',
+    cms: 'cms-service',
+    cmscore: 'cms-service',
+    cmsservice: 'cms-service',
+    docs: 'doc-service',
+    docservice: 'doc-service',
+    storage: 'storage-service',
+    storageservice: 'storage-service',
+    telemetry: 'telemetry-service',
+    telemetryservice: 'telemetry-service',
+  };
+  return audiences[normalized] ?? null;
+}
+
+function receiver(audience: string): { path: string; operations: readonly string[] } | undefined {
+  switch (audience) {
+    case 'cms-service':
+      return INTERNAL_REQUEST_RECEIVERS['cms-service'];
+    case 'doc-service':
+      return INTERNAL_REQUEST_RECEIVERS['doc-service'];
+    case 'storage-service':
+      return INTERNAL_REQUEST_RECEIVERS['storage-service'];
+    case 'telemetry-service':
+      return INTERNAL_REQUEST_RECEIVERS['telemetry-service'];
+    default:
+      return undefined;
+  }
+}
+
 function permitted(issuer: string, request: InternalRequest): boolean {
   const path = new URL(request.url).pathname;
   if (request.method !== 'POST') return false;
@@ -178,9 +285,35 @@ function permitted(issuer: string, request: InternalRequest): boolean {
       gatewayAccountsActions.has(request.operation)
     );
   }
+  const destination = receiver(request.audience);
+  if (destination) {
+    return (
+      issuer === 'gateway' &&
+      path === destination.path &&
+      destination.operations.includes(request.operation)
+    );
+  }
   if (request.audience !== 'authz-service') return false;
-  if (path === '/authz/check' && request.operation === 'authz.check')
-    return issuer === 'gateway' || issuer === 'accounts';
+  if (path === '/authz/check' && request.operation === 'authz.check') {
+    if (issuer === 'gateway' || issuer === 'accounts') return true;
+    const catalog =
+      issuer === 'cms'
+        ? receiver('cms-service')
+        : issuer === 'docs'
+          ? receiver('doc-service')
+          : undefined;
+    if (!catalog) return false;
+    const body: unknown = JSON.parse(
+      typeof request.body === 'string' ? request.body : Buffer.from(request.body).toString('utf8'),
+    );
+    return (
+      !!body &&
+      typeof body === 'object' &&
+      'actionKey' in body &&
+      typeof body.actionKey === 'string' &&
+      catalog.operations.includes(body.actionKey)
+    );
+  }
   return (
     path === '/internal/authz-actions' &&
     issuer === 'accounts' &&
@@ -260,8 +393,8 @@ export function verifyInternalRequest(
       JSON.stringify(claims.context) !== JSON.stringify(actual.context)
     )
       return false;
-    // Authz's workspace comes from its body. It must agree with the signed header.
-    if (request.audience === 'authz-service') {
+    // Any explicit payload workspace must agree with signed context.
+    if (request.body.length > 0) {
       const body: unknown = JSON.parse(
         typeof request.body === 'string'
           ? request.body
@@ -274,6 +407,14 @@ export function verifyInternalRequest(
         typeof target === 'object' &&
         'workspaceId' in target &&
         target.workspaceId !== (request.headers.get('x-workspace-id') ?? null)
+      )
+        return false;
+      // Read checks ask about the signed actor, never an unsigned substitute.
+      if (
+        request.audience === 'authz-service' &&
+        request.operation === 'authz.check' &&
+        'userId' in body &&
+        body.userId !== (request.headers.get('x-xs-user-id') ?? null)
       )
         return false;
     }
@@ -314,4 +455,58 @@ export async function readInternalRequestBody(
     reader.releaseLock();
   }
   return Buffer.concat(chunks, total);
+}
+
+export type InternalRequestAuthentication =
+  | { ok: true; requestId: string; body: Uint8Array }
+  | { ok: false; status: 400 | 401 | 403 | 500; code: string; message: string };
+
+/** Shared receiver boundary; framework adapters may consume only these verified bytes. */
+export async function authenticateInternalRequest(
+  request: Request,
+  audience: string,
+  maxBytes: number,
+): Promise<InternalRequestAuthentication> {
+  const token = request.headers.get('X-Internal-Service-Token');
+  if (!token)
+    return { ok: false, status: 401, code: 'UNAUTHORIZED', message: 'Missing internal auth token' };
+  let trust: InternalRequestTrust[];
+  try {
+    trust = loadInternalRequestTrust();
+  } catch {
+    return {
+      ok: false,
+      status: 500,
+      code: 'INTERNAL_ERROR',
+      message: 'Internal auth misconfigured',
+    };
+  }
+  let body: Uint8Array;
+  try {
+    body = await readInternalRequestBody(request, maxBytes);
+  } catch {
+    return { ok: false, status: 400, code: 'VALIDATION_ERROR', message: 'Request body too large' };
+  }
+  if (
+    !verifyInternalRequest(
+      token,
+      {
+        audience,
+        operation: internalRequestOperation(audience, new URL(request.url).pathname, body),
+        url: request.url,
+        method: request.method,
+        headers: request.headers,
+        body,
+      },
+      trust,
+    )
+  ) {
+    return {
+      ok: false,
+      status: 403,
+      code: 'FORBIDDEN',
+      message: 'Invalid internal request identity or context',
+    };
+  }
+  return { ok: true, requestId: request.headers.get('X-Request-Id') ?? '', body };
 }

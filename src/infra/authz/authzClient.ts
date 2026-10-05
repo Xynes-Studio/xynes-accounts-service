@@ -74,7 +74,8 @@ export function createAuthzClient({
       'X-Request-Id': context?.requestId || randomUUID(),
     });
     if (workspaceId) headers.set('X-Workspace-Id', workspaceId);
-    if (context?.userId) headers.set('X-XS-User-Id', context.userId);
+    const actorUserId = context?.actor?.kind === 'user' ? context.actor.userId : context?.userId;
+    if (actorUserId) headers.set('X-XS-User-Id', actorUserId);
     if (context?.actor) {
       headers.set('X-XS-Actor-Type', context.actor.kind);
       if (context.actor.kind === 'api_key') {
