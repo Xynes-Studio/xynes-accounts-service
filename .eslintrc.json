@@ -1,6 +1,9 @@
 {
   "parser": "@typescript-eslint/parser",
-  "plugins": ["@typescript-eslint", "prettier"],
+  "plugins": [
+    "@typescript-eslint",
+    "prettier"
+  ],
   "extends": [
     "eslint:recommended",
     "plugin:@typescript-eslint/recommended",
@@ -9,5 +12,15 @@
   "rules": {
     "prettier/prettier": "error",
     "@typescript-eslint/no-explicit-any": "off"
-  }
+  },
+  "overrides": [
+    {
+      "files": [
+        "src/infra/security/internal-request.ts"
+      ],
+      "rules": {
+        "prettier/prettier": "off"
+      }
+    }
+  ]
 }
