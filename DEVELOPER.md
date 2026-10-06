@@ -888,3 +888,10 @@ Key creation regressions assert exact scopes, retained legacy reads and no
 write scopes. The infra disposable access smoke uses this actual issuer plus
 the real gateway hash resolver to prove old/new, expired and revoked behavior.
 See infra `docs/deployment/cms-delivery-access.md` for rollout order.
+
+## Canonical protocol formatting
+
+The generated internal-request.ts mirror is byte-identical to platform-contracts.
+Its Prettier rule alone is excluded so consumer formatting cannot alter canonical
+bytes; all semantic ESLint rules and TypeScript checks still apply. Edit and export
+the protocol in its owning contracts repository, not the generated consumer file.

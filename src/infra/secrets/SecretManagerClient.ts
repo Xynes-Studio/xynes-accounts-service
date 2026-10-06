@@ -62,7 +62,10 @@ export interface MailProviderCredentialMaterial {
  *                        URI.
  */
 export type SecretManagerErrorCode =
-  'NOT_FOUND' | 'BACKEND_UNAVAILABLE' | 'MATERIAL_INVALID' | 'URI_INVALID';
+  | 'NOT_FOUND'
+  | 'BACKEND_UNAVAILABLE'
+  | 'MATERIAL_INVALID'
+  | 'URI_INVALID';
 
 export class SecretManagerError extends Error {
   public readonly name = 'SecretManagerError';
