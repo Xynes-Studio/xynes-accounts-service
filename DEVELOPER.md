@@ -388,7 +388,7 @@ Workspace API key lifecycle handlers (CRUD + usage read) with built-in RBAC and 
 
 | Preset Key | Scopes |
 |-----------|--------|
-| `cms_readonly` | `cms.content.listPublished`, `cms.content.getPublishedBySlug`, `cms.blog_entry.listPublished`, `cms.blog_entry.getPublishedBySlug` |
+| `cms_readonly` | `cms.content.listPublished`, `cms.content.getPublishedBySlug`, `cms.blog_entry.listPublished`, `cms.blog_entry.getPublishedBySlug`, `cms.delivery.listByDirectory`, `cms.delivery.getById` |
 | `cms_authoring` | `cms.entry.create`, `cms.entry.update`, `cms.entry.getById`, `cms.entry.listByDirectory` |
 | `cms_publisher` | All `cms_authoring` scopes + `cms.entry.publish`, `cms.entry.status.set` |
 | `telemetry_read` | `telemetry.events.listRecentForWorkspace`, `telemetry.stats.summaryByRoute` |
@@ -874,3 +874,17 @@ are rejected, including authz read checks. Follow the backend infra identity
 runbook for coordinated seven-service rollout and rotation. Protocol mirrors are
 generated from platform-contracts and must be changed/exported there; validate
 `corepack pnpm internal-request:check` with the backend workspace present.
+
+### CMS-INT-A4 key recovery
+
+New `cms_readonly` keys persist six read scopes, including the two snapshot
+operations. The five preset keys and every other preset remain unchanged.
+Stored scopes are authoritative: deploying this mapping does not upgrade old
+keys. An authorized Workspace Admin user must issue a replacement key, update
+the consumer, verify delivery, and explicitly revoke the old key. Never bulk-add
+scopes or expose raw keys in logs. API keys cannot issue their own replacements.
+
+Key creation regressions assert exact scopes, retained legacy reads and no
+write scopes. The infra disposable access smoke uses this actual issuer plus
+the real gateway hash resolver to prove old/new, expired and revoked behavior.
+See infra `docs/deployment/cms-delivery-access.md` for rollout order.

@@ -360,7 +360,14 @@ describe('platform.api_keys.create', () => {
     });
     const payload = { name: 'CMS Read Key', presetKey: 'cms_readonly' as const };
     await handler(payload, makeCtx());
-    const expectedScopes = WORKSPACE_API_KEY_PRESETS.cms_readonly;
+    const expectedScopes = [
+      'cms.content.listPublished',
+      'cms.content.getPublishedBySlug',
+      'cms.blog_entry.listPublished',
+      'cms.blog_entry.getPublishedBySlug',
+      'cms.delivery.listByDirectory',
+      'cms.delivery.getById',
+    ];
     expect(insertedScopes).toHaveLength(expectedScopes.length);
     const insertedActionKeys = insertedScopes.map((s) => s.actionKey);
     for (const scope of expectedScopes) {
@@ -374,7 +381,7 @@ describe('platform.api_keys.create', () => {
       dbClient: makeFakeDb() as any,
       keyGenerator: makeFakeKeyGenerator(),
     });
-    const payload = { name: 'Bad Key', presetKey: 'nonexistent_preset' as any };
+    const payload = { name: 'Bad Key', presetKey: 'nonexistent_preset' };
     await expect(handler(payload, makeCtx())).rejects.toThrow(DomainError);
     try {
       await handler(payload, makeCtx());
@@ -487,11 +494,35 @@ describe('platform.api_keys.create', () => {
 
   it('maps each preset to the expected scope count', () => {
     // Validate preset mapping structure
-    expect(WORKSPACE_API_KEY_PRESETS.cms_readonly.length).toBe(4);
+    expect(WORKSPACE_API_KEY_PRESETS.cms_readonly.length).toBe(6);
     expect(WORKSPACE_API_KEY_PRESETS.cms_authoring.length).toBe(4);
     expect(WORKSPACE_API_KEY_PRESETS.cms_publisher.length).toBe(6);
     expect(WORKSPACE_API_KEY_PRESETS.telemetry_read.length).toBe(2);
     expect(WORKSPACE_API_KEY_PRESETS.workspace_admin.length).toBe(3);
+  });
+
+  it('only the read-only preset gains the two delivery scopes', () => {
+    expect(Object.keys(WORKSPACE_API_KEY_PRESETS).sort()).toEqual([
+      'cms_authoring',
+      'cms_publisher',
+      'cms_readonly',
+      'telemetry_read',
+      'workspace_admin',
+    ]);
+    for (const [preset, scopes] of Object.entries(WORKSPACE_API_KEY_PRESETS)) {
+      const delivery = scopes.filter((scope) => scope.startsWith('cms.delivery.'));
+      expect(delivery).toEqual(
+        preset === 'cms_readonly' ? ['cms.delivery.listByDirectory', 'cms.delivery.getById'] : [],
+      );
+    }
+    expect(
+      WORKSPACE_API_KEY_PRESETS.cms_readonly.every(
+        (scope) =>
+          scope.startsWith('cms.delivery.') ||
+          scope.endsWith('listPublished') ||
+          scope.endsWith('getPublishedBySlug'),
+      ),
+    ).toBe(true);
   });
 
   it('workspace_admin preset does NOT include api_keys.create or api_keys.revoke', () => {

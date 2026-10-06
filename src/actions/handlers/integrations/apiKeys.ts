@@ -42,6 +42,8 @@ export const WORKSPACE_API_KEY_PRESETS = {
     'cms.content.getPublishedBySlug',
     'cms.blog_entry.listPublished',
     'cms.blog_entry.getPublishedBySlug',
+    'cms.delivery.listByDirectory',
+    'cms.delivery.getById',
   ],
   cms_authoring: [
     'cms.entry.create',
