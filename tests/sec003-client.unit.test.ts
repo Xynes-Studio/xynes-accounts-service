@@ -50,7 +50,12 @@ it('serializes each request once so the signature binds the actual transmitted b
   );
   const client = createAuthzClient({ baseUrl: 'http://authz', fetchImpl });
   await client.assignRole(payload);
-  await client.checkPermission(payload);
+  await client.checkPermission(payload, {
+    requestId: 'serialized-check',
+    userId: null,
+    workspaceId,
+    actor: { kind: 'user', userId },
+  });
   await client.listRolesForWorkspace(payload);
   expect(serializations).toBe(3);
 });

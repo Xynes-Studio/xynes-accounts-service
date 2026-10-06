@@ -80,11 +80,7 @@ export type SmtpDispatchResult = {
 export class SmtpTransportError extends Error {
   public readonly name = 'SmtpTransportError';
   public readonly kind:
-    | 'CONNECT_FAILED'
-    | 'TIMEOUT'
-    | 'PROTOCOL_ERROR'
-    | 'REJECTED_4XX'
-    | 'REJECTED_5XX';
+    'CONNECT_FAILED' | 'TIMEOUT' | 'PROTOCOL_ERROR' | 'REJECTED_4XX' | 'REJECTED_5XX';
   public readonly replyCode: number | null;
 
   constructor(kind: SmtpTransportError['kind'], replyCode: number | null, message: string) {

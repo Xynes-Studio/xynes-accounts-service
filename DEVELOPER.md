@@ -44,7 +44,7 @@ Internal-only Accounts service. This service exposes **no public routes**.
 
 - Endpoint: `POST /internal/accounts-actions`
 - Requires internal auth header:
-	- `X-Internal-Service-Token: <token>` (must match env `INTERNAL_SERVICE_TOKEN`)
+	- `X-Internal-Service-Token: <token>` (Ed25519 bound request verified against `INTERNAL_REQUEST_TRUST_FILE`)
 - Trust boundary (gateway-owned headers):
 	- `X-XS-User-Id` (UUID)
 	- `X-Workspace-Id` (UUID) (required for workspace-scoped actions)
@@ -728,7 +728,8 @@ Required env vars:
 
 - `PORT`
 - `DATABASE_URL`
-- `INTERNAL_SERVICE_TOKEN`
+- `INTERNAL_REQUEST_TRUST_FILE`
+- `INTERNAL_REQUEST_PRIVATE_KEY_FILE` and `INTERNAL_REQUEST_KEY_ID`
 - `AUTHZ_SERVICE_URL` (used for workspace role assignment)
 - `AUTHZ_CLIENT_TIMEOUT_MS` (optional; default 5000)
 - `MAX_JSON_BODY_BYTES`
@@ -800,7 +801,6 @@ docker run -d --name h2-smoke --rm \
   -e PORT=4203 \
   -e DATABASE_URL='postgres://postgres:postgres@host.docker.internal:5432/postgres' \
   -e XYNES_BUILD_VERSION='h2-test' \
-  -e INTERNAL_SERVICE_TOKEN='dummy' \
   -p 4203:4203 \
   xynesplatform/xynes-accounts-service:test
 sleep 8
@@ -817,7 +817,8 @@ docker stop h2-smoke
 | `DATABASE_URL` | yes | — | Postgres connection string for `platform`/`identity` schemas. |
 | `XYNES_BUILD_VERSION` | recommended | `dev` | Surfaces in `/health.version`. Set to the image tag or `sha-<7>` at build time. |
 | `ACCOUNTS_HEALTH_AUTHZ_URL` | no | — | Optional authz `/health` URL for the one-hop probe (e.g. `http://authz-service:4300/health`). When unset, `/health.checks.authz` reports `"skipped"`. **MUST** point at the authz service directly, NOT the gateway (§4 rule 1 forbids transitive probes). |
-| `INTERNAL_SERVICE_TOKEN` | yes | — | Required by the internal-actions middleware; never used by `/health` or `/ready`. |
+| `INTERNAL_REQUEST_TRUST_FILE` | internal actions | — | Receiver public trust JSON; not needed by health endpoints. |
+| `INTERNAL_REQUEST_PRIVATE_KEY_FILE`, `INTERNAL_REQUEST_KEY_ID` | authz calls | — | Accounts-owned signing identity. |
 | `JWT_SECRET` | yes | — | Used by `src/infra/security/internal-jwt.ts` for inviting/workspace JWTs; never used by `/health` or `/ready`. |
 
 ### Deviations from the canonical group-H skeleton (locked by H-1)
@@ -862,6 +863,17 @@ token lifetime use existing operation idempotency; no global replay cache exists
 SEC-003-FU-1 tracks other services' legacy internal credentials and CMS/docs'
 isolated read-only `POST /authz/check` compatibility adapter. That adapter cannot
 assign or list roles. Broader service migration is not part of this closure.
+
+## SEC-003-FU-1 current internal authentication
+
+Internal actions now require Ed25519 requests bound to receiver, operation, exact
+body, actor, workspace and request id. Historical shared-token/hybrid instructions
+in this document no longer apply to authentication. Receivers fail closed without
+public trust; callers load only their own signing file. Shared static/HS256 tokens
+are rejected, including authz read checks. Follow the backend infra identity
+runbook for coordinated seven-service rollout and rotation. Protocol mirrors are
+generated from platform-contracts and must be changed/exported there; validate
+`corepack pnpm internal-request:check` with the backend workspace present.
 
 ### CMS-INT-A4 key recovery
 
