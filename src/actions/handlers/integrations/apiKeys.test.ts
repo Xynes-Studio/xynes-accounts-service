@@ -495,13 +495,13 @@ describe('platform.api_keys.create', () => {
   it('maps each preset to the expected scope count', () => {
     // Validate preset mapping structure
     expect(WORKSPACE_API_KEY_PRESETS.cms_readonly.length).toBe(6);
-    expect(WORKSPACE_API_KEY_PRESETS.cms_authoring.length).toBe(4);
-    expect(WORKSPACE_API_KEY_PRESETS.cms_publisher.length).toBe(6);
+    expect(WORKSPACE_API_KEY_PRESETS.cms_authoring.length).toBe(10);
+    expect(WORKSPACE_API_KEY_PRESETS.cms_publisher.length).toBe(12);
     expect(WORKSPACE_API_KEY_PRESETS.telemetry_read.length).toBe(2);
     expect(WORKSPACE_API_KEY_PRESETS.workspace_admin.length).toBe(3);
   });
 
-  it('only the read-only preset gains the two delivery scopes', () => {
+  it('all CMS presets include the two delivery scopes', () => {
     expect(Object.keys(WORKSPACE_API_KEY_PRESETS).sort()).toEqual([
       'cms_authoring',
       'cms_publisher',
@@ -512,7 +512,7 @@ describe('platform.api_keys.create', () => {
     for (const [preset, scopes] of Object.entries(WORKSPACE_API_KEY_PRESETS)) {
       const delivery = scopes.filter((scope) => scope.startsWith('cms.delivery.'));
       expect(delivery).toEqual(
-        preset === 'cms_readonly' ? ['cms.delivery.listByDirectory', 'cms.delivery.getById'] : [],
+        preset.startsWith('cms_') ? ['cms.delivery.listByDirectory', 'cms.delivery.getById'] : [],
       );
     }
     expect(

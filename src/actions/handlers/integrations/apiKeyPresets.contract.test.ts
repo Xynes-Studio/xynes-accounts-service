@@ -76,3 +76,72 @@ describe('PFU-6 — WORKSPACE_API_KEY_PRESETS keys ↔ platform-contracts', () =
     }
   });
 });
+
+describe('Publisher capability inheritance', () => {
+  it('has exactly all published reads, draft authoring and publication actions', () => {
+    const actual: string[] = [...WORKSPACE_API_KEY_PRESETS.cms_publisher];
+    expect(actual.sort()).toEqual(
+      [
+        'cms.content.listPublished',
+        'cms.content.getPublishedBySlug',
+        'cms.blog_entry.listPublished',
+        'cms.blog_entry.getPublishedBySlug',
+        'cms.delivery.listByDirectory',
+        'cms.delivery.getById',
+        'cms.entry.create',
+        'cms.entry.update',
+        'cms.entry.getById',
+        'cms.entry.listByDirectory',
+        'cms.entry.publish',
+        'cms.entry.status.set',
+      ].sort(),
+    );
+  });
+  it('never grants key lifecycle, directory, collaboration, docs, storage or telemetry rights', () => {
+    for (const scopes of Object.values(WORKSPACE_API_KEY_PRESETS)) {
+      expect(new Set(scopes).size).toBe(scopes.length);
+    }
+    expect(
+      WORKSPACE_API_KEY_PRESETS.cms_publisher.some((scope) =>
+        [
+          'platform.',
+          'docs.',
+          'storage.',
+          'telemetry.',
+          'cms.content_directories.',
+          'cms.entry.collaborators.',
+          'cms.entry.share.',
+        ].some((prefix) => scope.startsWith(prefix)),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('Approved Authoring capability inheritance', () => {
+  it('has exactly all published reads and four draft authoring actions without publication or admin powers', () => {
+    const expected = [
+      'cms.content.listPublished',
+      'cms.content.getPublishedBySlug',
+      'cms.blog_entry.listPublished',
+      'cms.blog_entry.getPublishedBySlug',
+      'cms.delivery.listByDirectory',
+      'cms.delivery.getById',
+      'cms.entry.create',
+      'cms.entry.update',
+      'cms.entry.getById',
+      'cms.entry.listByDirectory',
+    ];
+    const actual: string[] = [...WORKSPACE_API_KEY_PRESETS.cms_authoring];
+    expect(actual.sort()).toEqual(expected.sort());
+    expect(new Set(WORKSPACE_API_KEY_PRESETS.cms_authoring).size).toBe(10);
+    const forbidden = [
+      'cms.entry.publish',
+      'cms.entry.status.set',
+      'cms.entry.delete',
+      'platform.api_keys.create',
+      'platform.api_keys.revoke',
+    ];
+    for (const action of forbidden)
+      expect(WORKSPACE_API_KEY_PRESETS.cms_authoring).not.toContain(action);
+  });
+});
