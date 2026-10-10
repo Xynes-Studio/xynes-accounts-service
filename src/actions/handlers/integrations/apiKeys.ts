@@ -36,29 +36,28 @@ import {
  * `platform.api_keys.create` and `platform.api_keys.revoke`
  * to prevent privilege escalation via API key self-management.
  */
+const CMS_READ_SCOPES = [
+  'cms.content.listPublished',
+  'cms.content.getPublishedBySlug',
+  'cms.blog_entry.listPublished',
+  'cms.blog_entry.getPublishedBySlug',
+  'cms.delivery.listByDirectory',
+  'cms.delivery.getById',
+] as const;
+
+const CMS_AUTHORING_SCOPES = [
+  'cms.entry.create',
+  'cms.entry.update',
+  'cms.entry.getById',
+  'cms.entry.listByDirectory',
+] as const;
+
+const CMS_PUBLICATION_SCOPES = ['cms.entry.publish', 'cms.entry.status.set'] as const;
+
 export const WORKSPACE_API_KEY_PRESETS = {
-  cms_readonly: [
-    'cms.content.listPublished',
-    'cms.content.getPublishedBySlug',
-    'cms.blog_entry.listPublished',
-    'cms.blog_entry.getPublishedBySlug',
-    'cms.delivery.listByDirectory',
-    'cms.delivery.getById',
-  ],
-  cms_authoring: [
-    'cms.entry.create',
-    'cms.entry.update',
-    'cms.entry.getById',
-    'cms.entry.listByDirectory',
-  ],
-  cms_publisher: [
-    'cms.entry.create',
-    'cms.entry.update',
-    'cms.entry.getById',
-    'cms.entry.listByDirectory',
-    'cms.entry.publish',
-    'cms.entry.status.set',
-  ],
+  cms_readonly: CMS_READ_SCOPES,
+  cms_authoring: [...CMS_READ_SCOPES, ...CMS_AUTHORING_SCOPES],
+  cms_publisher: [...CMS_READ_SCOPES, ...CMS_AUTHORING_SCOPES, ...CMS_PUBLICATION_SCOPES],
   telemetry_read: ['telemetry.events.listRecentForWorkspace', 'telemetry.stats.summaryByRoute'],
   workspace_admin: [
     'platform.domains.list',

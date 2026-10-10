@@ -389,8 +389,8 @@ Workspace API key lifecycle handlers (CRUD + usage read) with built-in RBAC and 
 | Preset Key | Scopes |
 |-----------|--------|
 | `cms_readonly` | `cms.content.listPublished`, `cms.content.getPublishedBySlug`, `cms.blog_entry.listPublished`, `cms.blog_entry.getPublishedBySlug`, `cms.delivery.listByDirectory`, `cms.delivery.getById` |
-| `cms_authoring` | `cms.entry.create`, `cms.entry.update`, `cms.entry.getById`, `cms.entry.listByDirectory` |
-| `cms_publisher` | All `cms_authoring` scopes + `cms.entry.publish`, `cms.entry.status.set` |
+| `cms_authoring` | All six `cms_readonly` scopes + `cms.entry.create`, `cms.entry.update`, `cms.entry.getById`, `cms.entry.listByDirectory` (10 distinct actions) |
+| `cms_publisher` | All ten `cms_authoring` scopes + `cms.entry.publish`, `cms.entry.status.set` (12 distinct actions) |
 | `telemetry_read` | `telemetry.events.listRecentForWorkspace`, `telemetry.stats.summaryByRoute` |
 | `workspace_admin` | `platform.domains.list`, `platform.api_keys.list`, `platform.api_keys.usage.read` |
 
@@ -902,3 +902,14 @@ Run `bun install --frozen-lockfile` before quality verification. CI uses Bun1.4.
 and the lockfile's Prettier3.9.6; reused older node_modules can report the opposite
 union formatting and must not be treated as CI-equivalent evidence. Dependency
 refresh stays within the selected checkout; package/lockfile changes are not needed.
+
+
+### CMS integration authorization epic (INT-POL)
+
+New Publisher issuance includes published delivery reads as well as directory-first authoring and publication. Exact membership, uniqueness and forbidden-action tests cover every preset; preset keys remain the shared platform-contracts allowlist. Authoring Read-only inheritance remains an owner decision; its current four-action set is retained until approved.
+
+Stored scopes are authoritative for existing keys. New issuance does not backfill older keys. The authorized usage endpoint reports `{ keyId, name, status, lastUsedAt, createdAt, scopes }`; it never returns raw/hash material. Workspace Admin can display these actual actions without inferring compatibility from the preset label. `workspace_admin` is a three-action metadata preset, separate from human owner/super-admin authority; API-key actors cannot create or revoke keys.
+
+For publication requests, the gateway and CMS require base plus effect permissions. A new Publisher should be issued only after both enforcement layers are deployed and verified. See infra `docs/deployment/cms-integration-policy.md` for deployment order, older-key recovery proposals, scoped RBAC reconciliation and pending policies. Existing-key recovery and creator offboarding remain owner decisions; no existing keys or role grants have been changed by this implementation.
+
+New Authoring keys inherit all published reads. Existing keys retain stored scopes; recover by explicit Workspace Admin replacement and revoke after consumer migration. Keys remain workspace-owned after creator offboarding until an authorized human revokes them. A preset label never certifies older stored capabilities.
